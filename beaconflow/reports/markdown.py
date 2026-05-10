@@ -32,6 +32,7 @@ def coverage_to_markdown(result: dict[str, Any]) -> str:
 
 def flow_to_markdown(result: dict[str, Any]) -> str:
     summary = result["summary"]
+    diagnostics = result.get("diagnostics", {})
     ai = result.get("ai_report", {})
     lines = [
         "# BeaconFlow Execution Report",
@@ -44,6 +45,13 @@ def flow_to_markdown(result: dict[str, Any]) -> str:
         f"- Unique transitions: {summary['unique_transitions']}",
         f"- Functions seen: {summary['functions_seen']}",
         f"- Truncated: {summary['truncated']}",
+        f"- Focus function: {summary.get('focus_function') or '<none>'}",
+        "",
+        "## Diagnostics",
+        "",
+        f"- Skipped non-target module events: {diagnostics.get('skipped_non_target_module_events', 0)}",
+        f"- Unmapped function events: {diagnostics.get('unmapped_function_events', 0)}",
+        f"- Unmapped basic-block events: {diagnostics.get('unmapped_basic_block_events', 0)}",
         "",
         "## AI Guidance",
         "",
@@ -91,5 +99,68 @@ def flow_to_markdown(result: dict[str, Any]) -> str:
     lines.extend(["", "## Next Steps", ""])
     for item in ai.get("next_steps", []):
         lines.append(f"- {item}")
+
+    return "\n".join(lines) + "\n"
+
+
+def flow_diff_to_markdown(result: dict[str, Any]) -> str:
+    summary = result["summary"]
+    ai = result["ai_report"]
+    lines = [
+        "# BeaconFlow Flow Diff",
+        "",
+        "## Summary",
+        "",
+        f"- Focus function: {summary.get('focus_function') or '<none>'}",
+        f"- Left unique blocks: {summary['left_unique_blocks']}",
+        f"- Right unique blocks: {summary['right_unique_blocks']}",
+        f"- Only-left blocks: {summary['only_left_blocks']}",
+        f"- Only-right blocks: {summary['only_right_blocks']}",
+        f"- Only-left edges: {summary['only_left_edges']}",
+        f"- Only-right edges: {summary['only_right_edges']}",
+        f"- Hit-count deltas: {summary.get('hit_count_deltas', 0)}",
+        "",
+        "## AI Guidance",
+        "",
+    ]
+    for item in ai.get("how_to_use", []):
+        lines.append(f"- {item}")
+
+    lines.extend(["", "## User Only-Right Block Ranges", ""])
+    for item in ai.get("user_only_right_block_ranges", []):
+        lines.append(f"- `{item['function']}:{item['start']}-{item['end']}` blocks={item['blocks']}")
+
+    lines.extend(["", "## User Only-Left Block Ranges", ""])
+    for item in ai.get("user_only_left_block_ranges", []):
+        lines.append(f"- `{item['function']}:{item['start']}-{item['end']}` blocks={item['blocks']}")
+
+    lines.extend(["", "## User Only-Right Blocks", ""])
+    for item in ai.get("user_only_right_blocks", []):
+        lines.append(f"- `{item['function']}:{item['block_start']}`")
+
+    lines.extend(["", "## User Only-Left Blocks", ""])
+    for item in ai.get("user_only_left_blocks", []):
+        lines.append(f"- `{item['function']}:{item['block_start']}`")
+
+    lines.extend(["", "## User Only-Right Edges", ""])
+    for item in ai.get("user_only_right_edges", []):
+        lines.append(
+            f"- `{item['from']['function']}:{item['from']['block_start']}` -> "
+            f"`{item['to']['function']}:{item['to']['block_start']}`"
+        )
+
+    lines.extend(["", "## User Only-Left Edges", ""])
+    for item in ai.get("user_only_left_edges", []):
+        lines.append(
+            f"- `{item['from']['function']}:{item['from']['block_start']}` -> "
+            f"`{item['to']['function']}:{item['to']['block_start']}`"
+        )
+
+    lines.extend(["", "## User Hit-Count Deltas", ""])
+    for item in ai.get("user_hit_count_deltas", []):
+        lines.append(
+            f"- `{item['function']}:{item['block_start']}` "
+            f"left={item['left_hits']} right={item['right_hits']} delta={item['delta']}"
+        )
 
     return "\n".join(lines) + "\n"

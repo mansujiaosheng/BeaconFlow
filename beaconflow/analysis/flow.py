@@ -115,6 +115,76 @@ def _is_user_key(key: tuple[str, int]) -> bool:
     return name == "<unknown>" or not _is_runtime_function(name)
 
 
+def _matches_focus(event: MappedBlock, focus_function: str | None) -> bool:
+    if not focus_function:
+        return True
+    if not event.function:
+        return False
+    focus = focus_function.lower()
+    return event.function.name.lower() == focus or hex_addr(event.function.start).lower() == focus
+
+
+def _key_from_json(item: dict[str, Any]) -> tuple[str, int]:
+    function = item.get("function") or "<unknown>"
+    block_start = item.get("block_start") or item.get("address")
+    return function, int(block_start, 16)
+
+
+def _edge_keys(flow: list[dict[str, Any]]) -> list[tuple[tuple[str, int], tuple[str, int]]]:
+    return [(_key_from_json(left), _key_from_json(right)) for left, right in zip(flow, flow[1:])]
+
+
+def _block_json(key: tuple[str, int]) -> dict[str, Any]:
+    return {"function": key[0], "block_start": hex_addr(key[1])}
+
+
+def _edge_json(edge: tuple[tuple[str, int], tuple[str, int]]) -> dict[str, Any]:
+    return {"from": _block_json(edge[0]), "to": _block_json(edge[1])}
+
+
+def _block_ranges_json(keys: list[tuple[str, int]], max_gap: int = 4) -> list[dict[str, Any]]:
+    ranges: list[dict[str, Any]] = []
+    if not keys:
+        return ranges
+
+    current_function, start = keys[0]
+    previous = start
+    count = 1
+    for function, address in keys[1:]:
+        if function == current_function and address - previous <= max_gap:
+            previous = address
+            count += 1
+            continue
+        ranges.append(
+            {
+                "function": current_function,
+                "start": hex_addr(start),
+                "end": hex_addr(previous + max_gap),
+                "blocks": count,
+            }
+        )
+        current_function = function
+        start = previous = address
+        count = 1
+
+    ranges.append(
+        {
+            "function": current_function,
+            "start": hex_addr(start),
+            "end": hex_addr(previous + max_gap),
+            "blocks": count,
+        }
+    )
+    return ranges
+
+
+def _hot_counts(result: dict[str, Any]) -> dict[tuple[str, int], int]:
+    return {
+        (item["function"], int(item["block_start"], 16)): int(item["hits"])
+        for item in result.get("hot_blocks", [])
+    }
+
+
 def _build_ai_report(
     compressed: list[MappedBlock],
     transitions: Counter[tuple[tuple[str, int], tuple[str, int]]],
@@ -248,7 +318,12 @@ def _build_ai_report(
     }
 
 
-def analyze_flow(metadata: ProgramMetadata, coverage: CoverageData, max_events: int = 0) -> dict[str, Any]:
+def analyze_flow(
+    metadata: ProgramMetadata,
+    coverage: CoverageData,
+    max_events: int = 0,
+    focus_function: str | None = None,
+) -> dict[str, Any]:
     """Map a drcov BB table to an ordered execution-flow report.
 
     DynamoRIO drcov logs basic block entries in the order they were observed.
@@ -257,12 +332,20 @@ def analyze_flow(metadata: ProgramMetadata, coverage: CoverageData, max_events: 
     """
 
     mapped: list[MappedBlock] = []
+    skipped_module_events = 0
+    unmapped_function_events = 0
+    unmapped_block_events = 0
     for index, block in enumerate(coverage.blocks):
         address = _static_address(metadata, coverage, block)
         if address is None:
+            skipped_module_events += 1
             continue
         function = _find_function(metadata, address)
         basic_block = _find_basic_block(function, address)
+        if function is None:
+            unmapped_function_events += 1
+        elif basic_block is None:
+            unmapped_block_events += 1
         mapped.append(
             MappedBlock(
                 event_index=index,
@@ -272,6 +355,9 @@ def analyze_flow(metadata: ProgramMetadata, coverage: CoverageData, max_events: 
                 block=basic_block,
             )
         )
+
+    if focus_function:
+        mapped = [event for event in mapped if _matches_focus(event, focus_function)]
 
     compressed = _compress_consecutive(mapped)
     transitions = Counter(_transition_key(left, right) for left, right in zip(compressed, compressed[1:]))
@@ -301,6 +387,13 @@ def analyze_flow(metadata: ProgramMetadata, coverage: CoverageData, max_events: 
             "unique_transitions": len(transitions),
             "functions_seen": len(function_order),
             "truncated": flow_limit < len(compressed),
+            "focus_function": focus_function,
+        },
+        "diagnostics": {
+            "skipped_non_target_module_events": skipped_module_events,
+            "unmapped_function_events": unmapped_function_events,
+            "unmapped_basic_block_events": unmapped_block_events,
+            "mapped_target_events": len(mapped),
         },
         "ai_report": ai_report,
         "function_order": function_order,
@@ -317,4 +410,81 @@ def analyze_flow(metadata: ProgramMetadata, coverage: CoverageData, max_events: 
             }
             for (left, right), hits in transitions.most_common(100)
         ],
+    }
+
+
+def diff_flow(
+    metadata: ProgramMetadata,
+    left: CoverageData,
+    right: CoverageData,
+    focus_function: str | None = None,
+) -> dict[str, Any]:
+    left_result = analyze_flow(metadata, left, focus_function=focus_function)
+    right_result = analyze_flow(metadata, right, focus_function=focus_function)
+    left_blocks = {_key_from_json(item) for item in left_result["flow"]}
+    right_blocks = {_key_from_json(item) for item in right_result["flow"]}
+    left_edges = set(_edge_keys(left_result["flow"]))
+    right_edges = set(_edge_keys(right_result["flow"]))
+    left_hits = _hot_counts(left_result)
+    right_hits = _hot_counts(right_result)
+
+    only_left_blocks = sorted(left_blocks - right_blocks, key=lambda item: (item[0], item[1]))
+    only_right_blocks = sorted(right_blocks - left_blocks, key=lambda item: (item[0], item[1]))
+    only_left_edges = sorted(left_edges - right_edges, key=str)
+    only_right_edges = sorted(right_edges - left_edges, key=str)
+
+    user_only_left_blocks = [key for key in only_left_blocks if _is_user_key(key)]
+    user_only_right_blocks = [key for key in only_right_blocks if _is_user_key(key)]
+    user_only_left_edges = [edge for edge in only_left_edges if _is_user_key(edge[0]) or _is_user_key(edge[1])]
+    user_only_right_edges = [edge for edge in only_right_edges if _is_user_key(edge[0]) or _is_user_key(edge[1])]
+    hit_deltas = []
+    for key in sorted(set(left_hits) | set(right_hits), key=lambda item: (item[0], item[1])):
+        left_count = left_hits.get(key, 0)
+        right_count = right_hits.get(key, 0)
+        if left_count == right_count:
+            continue
+        hit_deltas.append(
+            {
+                "function": key[0],
+                "block_start": hex_addr(key[1]),
+                "left_hits": left_count,
+                "right_hits": right_count,
+                "delta": right_count - left_count,
+            }
+        )
+    user_hit_deltas = [item for item in hit_deltas if not _is_runtime_function(item["function"])]
+
+    return {
+        "summary": {
+            "focus_function": focus_function,
+            "left_unique_blocks": len(left_blocks),
+            "right_unique_blocks": len(right_blocks),
+            "only_left_blocks": len(only_left_blocks),
+            "only_right_blocks": len(only_right_blocks),
+            "only_left_edges": len(only_left_edges),
+            "only_right_edges": len(only_right_edges),
+            "hit_count_deltas": len(hit_deltas),
+        },
+        "ai_report": {
+            "purpose": "AI-focused differential execution-flow report.",
+            "how_to_use": [
+                "Start with user_only_right_blocks/edges to see what the right run uniquely reached.",
+                "Use user_only_left_blocks/edges to identify failure or alternate-path logic.",
+                "If focus_function is null and CRT noise dominates, rerun with --focus-function _main or a checker function.",
+            ],
+            "user_only_left_blocks": [_block_json(key) for key in user_only_left_blocks[:100]],
+            "user_only_right_blocks": [_block_json(key) for key in user_only_right_blocks[:100]],
+            "user_only_left_block_ranges": _block_ranges_json(user_only_left_blocks)[:50],
+            "user_only_right_block_ranges": _block_ranges_json(user_only_right_blocks)[:50],
+            "user_only_left_edges": [_edge_json(edge) for edge in user_only_left_edges[:100]],
+            "user_only_right_edges": [_edge_json(edge) for edge in user_only_right_edges[:100]],
+            "user_hit_count_deltas": user_hit_deltas[:100],
+        },
+        "only_left_blocks": [_block_json(key) for key in only_left_blocks[:200]],
+        "only_right_blocks": [_block_json(key) for key in only_right_blocks[:200]],
+        "only_left_edges": [_edge_json(edge) for edge in only_left_edges[:200]],
+        "only_right_edges": [_edge_json(edge) for edge in only_right_edges[:200]],
+        "hit_count_deltas": hit_deltas[:200],
+        "left_diagnostics": left_result["diagnostics"],
+        "right_diagnostics": right_result["diagnostics"],
     }

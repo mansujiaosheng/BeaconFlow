@@ -34,9 +34,11 @@ def collect_drcov(
     arch: str = "x64",
     drrun_path: str | Path | None = None,
     stdin_text: str | None = None,
+    run_cwd: str | Path | None = None,
 ) -> Path:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
+    run_directory = Path(run_cwd).resolve() if run_cwd else output.resolve()
 
     args = list(target_args or [])
     if args and args[0] == "--":
@@ -45,7 +47,8 @@ def collect_drcov(
     drrun = (Path(drrun_path) if drrun_path else bundled_drrun(arch)).resolve()
     target_path = Path(target).resolve()
     command = [str(drrun), "-t", "drcov", "--", str(target_path), *args]
-    completed = subprocess.run(command, cwd=output, input=stdin_text, capture_output=True, text=True)
+    before = {path.resolve() for path in run_directory.glob("drcov.*.log")}
+    completed = subprocess.run(command, cwd=run_directory, input=stdin_text, capture_output=True, text=True)
     if completed.returncode != 0:
         raise RuntimeError(
             "drcov collection failed\n"
@@ -53,7 +56,13 @@ def collect_drcov(
             f"stdout:\n{completed.stdout}\n"
             f"stderr:\n{completed.stderr}"
         )
-    return latest_drcov_log(output)
+    generated = [path for path in run_directory.glob("drcov.*.log") if path.resolve() not in before]
+    log_path = max(generated, key=lambda x: x.stat().st_mtime) if generated else latest_drcov_log(run_directory)
+    if output.resolve() == run_directory:
+        return log_path
+    destination = output / log_path.name
+    shutil.copy2(log_path, destination)
+    return destination
 
 
 def dynamorio_available() -> bool:
