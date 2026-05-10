@@ -533,3 +533,212 @@ def diff_flow(
         "left_diagnostics": left_result["diagnostics"],
         "right_diagnostics": right_result["diagnostics"],
     }
+
+
+def _identify_dispatchers(
+    compressed: list[MappedBlock],
+    hot_blocks: Counter[tuple[str, int]],
+    min_hits: int = 2,
+    min_pred: int = 2,
+    min_succ: int = 2,
+) -> set[tuple[str, int]]:
+    """识别平坦化中的 dispatcher 块。
+
+    dispatcher 的特征：高频执行 + 多前驱（多个真实块跳回 dispatcher）+ 多后继（dispatcher 分发到多个真实块）。
+    """
+    out_degree: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    in_degree: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    for left, right in zip(compressed, compressed[1:]):
+        out_degree.setdefault(left.key, set()).add(right.key)
+        in_degree.setdefault(right.key, set()).add(left.key)
+
+    dispatchers: set[tuple[str, int]] = set()
+    for key, hits in hot_blocks.items():
+        pred_count = len(in_degree.get(key, ()))
+        succ_count = len(out_degree.get(key, ()))
+        score = hits + succ_count * 2 + pred_count
+        # dispatcher 判定：高频 + 多前驱或多后继
+        if hits >= min_hits and (pred_count >= min_pred or succ_count >= min_succ):
+            dispatchers.add(key)
+        # 或者 score 足够高（即使 pred/succ 不多，但频率极高也说明是 dispatcher）
+        elif score >= 10 and hits >= 3:
+            dispatchers.add(key)
+
+    return dispatchers
+
+
+def deflatten_flow(
+    metadata: ProgramMetadata,
+    coverage: CoverageData,
+    focus_function: str | None = None,
+    address_start: int | None = None,
+    address_end: int | None = None,
+    dispatcher_min_hits: int = 2,
+    dispatcher_min_pred: int = 2,
+    dispatcher_min_succ: int = 2,
+) -> dict[str, Any]:
+    """反平坦化分析：从执行流中过滤 dispatcher 块，重建真实控制流边。
+
+    核心思路：
+    1. 识别 dispatcher 块（高频 + 多前驱/多后继）
+    2. 从执行流中删除 dispatcher 块
+    3. 重建真实边：A -> dispatcher -> B 变成 A -> B
+    4. 输出"干净的"执行流
+    """
+    flow_result = analyze_flow(
+        metadata, coverage,
+        focus_function=focus_function,
+        address_start=address_start,
+        address_end=address_end,
+    )
+
+    compressed_events: list[dict[str, Any]] = flow_result["flow"]
+    if not compressed_events:
+        return {
+            "summary": {
+                "error": "no mapped events in the target range",
+                "original_blocks": 0,
+                "dispatcher_blocks": 0,
+                "real_blocks": 0,
+                "real_edges": 0,
+            },
+        }
+
+    # 重建 MappedBlock 列表
+    mapped: list[MappedBlock] = []
+    for index, block in enumerate(coverage.blocks):
+        address = _static_address(metadata, coverage, block)
+        if address is None:
+            continue
+        if address_start is not None and address < address_start:
+            continue
+        if address_end is not None and address >= address_end:
+            continue
+        function = _find_function(metadata, address)
+        basic_block = _find_basic_block(function, address)
+        mapped.append(MappedBlock(event_index=index, address=address, size=block.size, function=function, block=basic_block))
+
+    if focus_function:
+        mapped = [e for e in mapped if _matches_focus(e, focus_function)]
+
+    compressed = _compress_consecutive(mapped)
+    hot_blocks = Counter(event.key for event in mapped)
+
+    # 识别 dispatcher 块
+    dispatcher_keys = _identify_dispatchers(
+        compressed, hot_blocks,
+        min_hits=dispatcher_min_hits,
+        min_pred=dispatcher_min_pred,
+        min_succ=dispatcher_min_succ,
+    )
+
+    # 从压缩流中过滤 dispatcher，重建真实边
+    real_events = [e for e in compressed if e.key not in dispatcher_keys]
+
+    # 重建真实边：如果原始流是 A -> D1 -> D2 -> B（D1, D2 是 dispatcher），
+    # 则真实边是 A -> B
+    real_edges: list[tuple[MappedBlock, MappedBlock]] = []
+    last_real: MappedBlock | None = None
+    for event in compressed:
+        if event.key in dispatcher_keys:
+            continue
+        if last_real is not None:
+            real_edges.append((last_real, event))
+        last_real = event
+
+    # 统计真实边的转移
+    real_transitions: Counter[tuple[tuple[str, int], tuple[str, int]]] = Counter()
+    for left, right in real_edges:
+        real_transitions[(left.key, right.key)] += 1
+
+    # 真实块的热度
+    real_hot_blocks = Counter(event.key for event in real_events)
+
+    # 真实块的出度/入度
+    real_out_degree: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    real_in_degree: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    for (left_key, right_key), hits in real_transitions.items():
+        real_out_degree.setdefault(left_key, set()).add(right_key)
+        real_in_degree.setdefault(right_key, set()).add(left_key)
+
+    # 真实分支点
+    real_branch_points = [
+        {
+            "block": _format_key(key),
+            "successors": sorted([_format_key(t) for t in targets]),
+            "successor_count": len(targets),
+        }
+        for key, targets in sorted(real_out_degree.items(), key=lambda item: (-len(item[1]), item[0][1]))
+        if len(targets) > 1
+    ]
+
+    # 真实执行脊柱
+    real_spine_keys: list[tuple[str, int]] = []
+    previous: tuple[str, int] | None = None
+    for event in real_events:
+        if event.key == previous:
+            continue
+        real_spine_keys.append(event.key)
+        previous = event.key
+
+    # 真实函数顺序
+    real_function_order: list[str] = []
+    seen_real_functions: set[str] = set()
+    for event in real_events:
+        name = event.function.name if event.function else "<unknown>"
+        if name not in seen_real_functions:
+            seen_real_functions.add(name)
+            real_function_order.append(name)
+
+    # dispatcher 块详情
+    dispatcher_details = []
+    for key in sorted(dispatcher_keys, key=lambda k: (-hot_blocks.get(k, 0), k[1])):
+        # 计算真实前驱：压缩流中，dispatcher 前一个非 dispatcher 块
+        pred_set: set[tuple[str, int]] = set()
+        succ_set: set[tuple[str, int]] = set()
+        for idx in range(len(compressed)):
+            if compressed[idx].key == key:
+                # 前驱：往前找最近的非 dispatcher 块
+                for j in range(idx - 1, -1, -1):
+                    if compressed[j].key not in dispatcher_keys:
+                        pred_set.add(compressed[j].key)
+                        break
+                # 后继：往后找最近的非 dispatcher 块
+                for j in range(idx + 1, len(compressed)):
+                    if compressed[j].key not in dispatcher_keys:
+                        succ_set.add(compressed[j].key)
+                        break
+        dispatcher_details.append({
+            "block": _format_key(key),
+            "hits": hot_blocks.get(key, 0),
+            "real_predecessors": len(pred_set),
+            "real_successors": len(succ_set),
+        })
+
+    return {
+        "summary": {
+            "original_blocks": len(set(e.key for e in compressed)),
+            "dispatcher_blocks": len(dispatcher_keys),
+            "real_blocks": len(set(e.key for e in real_events)),
+            "real_edges": len(real_transitions),
+            "real_branch_points": len(real_branch_points),
+            "real_events_in_spine": len(real_spine_keys),
+        },
+        "dispatcher_blocks": [_format_key(k) for k in sorted(dispatcher_keys, key=lambda k: (-hot_blocks.get(k, 0), k[1]))],
+        "real_function_order": " -> ".join(real_function_order),
+        "real_execution_spine": [_format_key(k) for k in real_spine_keys[:80]],
+        "real_branch_points": real_branch_points[:20],
+        "real_edges": [
+            {
+                "from": _format_key(left),
+                "to": _format_key(right),
+                "hits": hits,
+            }
+            for (left, right), hits in real_transitions.most_common(100)
+        ],
+        "real_hot_blocks": [
+            {"block": _format_key(key), "hits": hits}
+            for key, hits in real_hot_blocks.most_common(50)
+        ],
+        "original_flow_result": flow_result,
+    }

@@ -5,13 +5,13 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_flow, diff_coverage, diff_flow
+from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, diff_coverage, diff_flow
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
-from beaconflow.reports import coverage_to_markdown, flow_diff_to_markdown, flow_to_markdown
+from beaconflow.reports import coverage_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
@@ -65,6 +65,27 @@ def _cmd_flow_diff(args: argparse.Namespace) -> int:
         address_end=address_end,
     )
     text = flow_diff_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_deflatten(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    coverage = _load_flow_input(args)
+    address_start, address_end = _resolve_address_range(args, metadata)
+    result = deflatten_flow(
+        metadata, coverage,
+        focus_function=args.focus_function,
+        address_start=address_start,
+        address_end=address_end,
+        dispatcher_min_hits=args.dispatcher_min_hits,
+        dispatcher_min_pred=args.dispatcher_min_pred,
+        dispatcher_min_succ=args.dispatcher_min_succ,
+    )
+    text = deflatten_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -493,6 +514,23 @@ def build_parser() -> argparse.ArgumentParser:
     flow_diff.add_argument("--format", choices=("json", "markdown"), default="json")
     flow_diff.add_argument("--output")
     flow_diff.set_defaults(func=_cmd_flow_diff)
+
+    deflatten = sub.add_parser("deflatten", help="Deflatten control flow: remove dispatcher blocks and reconstruct real edges.")
+    deflatten.add_argument("--metadata", required=True)
+    deflatten.add_argument("--coverage", help="Path to a drcov log file.")
+    deflatten.add_argument("--address-log", help="Path to a QEMU address log file.")
+    deflatten.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
+    deflatten.add_argument("--address-min")
+    deflatten.add_argument("--address-max")
+    deflatten.add_argument("--focus-function", help="Only analyze events in this function.")
+    deflatten.add_argument("--from", dest="from_", help="Start address or function name for range filtering (inclusive).")
+    deflatten.add_argument("--to", dest="to", help="End address or function name for range filtering (exclusive).")
+    deflatten.add_argument("--dispatcher-min-hits", type=int, default=2, help="Min hits for a block to be considered dispatcher (default: 2).")
+    deflatten.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
+    deflatten.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
+    deflatten.add_argument("--format", choices=("json", "markdown"), default="json")
+    deflatten.add_argument("--output")
+    deflatten.set_defaults(func=_cmd_deflatten)
 
     collect = sub.add_parser("collect", help="Run a target under bundled DynamoRIO drcov. Supports both PE (Windows) and ELF (via WSL on Windows).")
     collect.add_argument("--target", required=True, help="Executable to run (PE or ELF).")

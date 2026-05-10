@@ -30,6 +30,72 @@ def coverage_to_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def deflatten_to_markdown(result: dict[str, Any]) -> str:
+    summary = result.get("summary", {})
+    lines = [
+        "# BeaconFlow Deflatten Report",
+        "",
+        "## Summary",
+        "",
+        f"- Original blocks (with dispatcher): {summary.get('original_blocks', 0)}",
+        f"- Dispatcher blocks removed: {summary.get('dispatcher_blocks', 0)}",
+        f"- Real blocks (after deflatten): {summary.get('real_blocks', 0)}",
+        f"- Real edges: {summary.get('real_edges', 0)}",
+        f"- Real branch points: {summary.get('real_branch_points', 0)}",
+        f"- Real events in spine: {summary.get('real_events_in_spine', 0)}",
+        "",
+    ]
+
+    dispatchers = result.get("dispatcher_blocks", [])
+    if dispatchers:
+        lines.extend(["## Dispatcher Blocks (Removed)", ""])
+        for block in dispatchers:
+            lines.append(f"- `{block}`")
+        lines.append("")
+
+    lines.extend(["## Real Function Order", "", result.get("real_function_order", "<none>"), ""])
+
+    spine = result.get("real_execution_spine", [])
+    if spine:
+        lines.extend(["## Real Execution Spine (Dispatcher Removed)", ""])
+        for index, block in enumerate(spine[:40], start=1):
+            lines.append(f"{index}. `{block}`")
+        if len(spine) > 40:
+            lines.append(f"... {len(spine) - 40} more blocks")
+        lines.append("")
+
+    branch_points = result.get("real_branch_points", [])
+    if branch_points:
+        lines.extend(["## Real Branch Points", ""])
+        for item in branch_points:
+            succs = ", ".join(f"`{s}`" for s in item["successors"])
+            lines.append(f"- `{item['block']}` -> {succs}")
+        lines.append("")
+
+    edges = result.get("real_edges", [])
+    if edges:
+        lines.extend(["## Real Edges (Top 30)", ""])
+        for item in edges[:30]:
+            lines.append(f"- `{item['from']}` -> `{item['to']}` hits={item['hits']}")
+        lines.append("")
+
+    hot_blocks = result.get("real_hot_blocks", [])
+    if hot_blocks:
+        lines.extend(["## Real Hot Blocks (Top 20)", ""])
+        for item in hot_blocks[:20]:
+            lines.append(f"- `{item['block']}` hits={item['hits']}")
+        lines.append("")
+
+    lines.extend(["## How to Use This Report", ""])
+    lines.append("- The **Real Execution Spine** shows the actual control flow without dispatcher noise.")
+    lines.append("- The **Real Branch Points** show where the program makes real decisions (if/else, loops).")
+    lines.append("- The **Real Edges** show the reconstructed control flow graph (A -> B, not A -> dispatcher -> B).")
+    lines.append("- Compare deflatten outputs from multiple inputs to see which branches are input-dependent.")
+    lines.append("- For state variable recovery, you need a richer trace (register/memory values).")
+
+    return "\n".join(lines) + "\n"
+
+
 def flow_to_markdown(result: dict[str, Any]) -> str:
     summary = result["summary"]
     diagnostics = result.get("diagnostics", {})

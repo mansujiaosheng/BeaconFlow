@@ -138,11 +138,12 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 
 | Tool | Purpose |
 | --- | --- |
-| `collect_drcov` | Run a Windows target under bundled DynamoRIO drcov, return log path. |
+| `collect_drcov` | Run a target under bundled DynamoRIO drcov, return log path. Supports PE and ELF (via WSL). |
 | `collect_qemu` | Run a target under QEMU user-mode tracing, return log path and output. |
 | `qemu_explore` | Run multiple QEMU traced inputs in parallel, classify verdicts, rank path novelty. |
 | `analyze_coverage` | Map drcov blocks to IDA/Ghidra-exported functions and basic blocks. |
 | `analyze_flow` | Map a drcov or address-log file to ordered basic-block flow and real transitions. |
+| `deflatten_flow` | Remove dispatcher blocks from execution flow, reconstruct real control flow edges. Key tool for CFF deflattening. |
 | `record_flow` | Run a target once and return the ordered executed flow. Prefer for flattened CFG triage. |
 | `diff_coverage` | Compare two coverage runs at function level. |
 | `diff_flow` | Compare two runs at block/edge level. Outputs only-left/only-right blocks, edges, and hit-count deltas. |
@@ -166,9 +167,12 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 - Use the recovered flow to ignore static CFG regions that were not exercised by the current input.
 - Register values, memory values, and branch conditions require a richer trace source such as Tenet, Frida, Pin, or custom DynamoRIO instrumentation.
 - Treat uncovered security-sensitive functions as fuzzing or input-generation targets.
-- For flattened control flow, use coverage to identify dispatcher-heavy functions and then compare multiple runs to infer real state transitions.
+- For flattened control flow, use `deflatten_flow` to remove dispatcher blocks and reconstruct real edges. The Real Execution Spine shows the actual control flow without dispatcher noise.
+- To fully deflatten a function, run with multiple inputs and merge the deflatten results to cover all paths.
 - In `qemu_explore`, focus on inputs with high `new_blocks_vs_baseline` — they reached code not seen by the baseline input and are most likely to reveal different logic paths.
 - Different `output_fingerprint` with no path novelty usually means data-state differences, not control-flow differences.
 - QEMU `-d in_asm` hit counts should not be treated as precise loop iteration counts; use `-d exec,nochain` or a stronger trace for that.
 - Ghidra-exported metadata is fully compatible with IDA-exported metadata. Prefer Ghidra for architectures IDA does not support (LoongArch, etc.).
 - When both IDA and Ghidra metadata are available, they may differ in function naming and basic-block boundaries, but the JSON schema is identical.
+- Dispatcher identification is heuristic-based (high hit count + many predecessors/successors). Adjust `--dispatcher-min-hits`, `--dispatcher-min-pred`, `--dispatcher-min-succ` if needed.
+- State variable recovery (knowing *why* the dispatcher chose a specific block) requires richer trace data than BeaconFlow currently provides.
