@@ -37,6 +37,16 @@ def _static_address(metadata: ProgramMetadata, coverage: CoverageData, block: Co
     if module and target_name and module.name != target_name:
         return None
     if module and target_name and module.name == target_name:
+        # drcov v5: absolute_start = start(运行时) + offset(段内)
+        # 静态地址 = preferred_base + seg_offset + offset
+        # 或简化：运行时地址 - (start - preferred_base - seg_offset)
+        if module.seg_offset or module.preferred_base:
+            # v5 格式：将运行时地址转换为静态地址
+            # runtime_base = module.start（段的运行时起始地址）
+            # static_base = module.preferred_base + module.seg_offset（段的静态起始地址）
+            # 但 preferred_base 在 PIE ELF 中可能是 0 或 image_base
+            # 更可靠的方式：offset 是段内偏移，静态地址 = image_base + seg_offset + offset
+            return metadata.image_base + module.seg_offset + block.offset
         return metadata.image_base + block.offset
     if block.absolute_start is not None:
         return block.absolute_start
@@ -122,6 +132,30 @@ def _matches_focus(event: MappedBlock, focus_function: str | None) -> bool:
         return False
     focus = focus_function.lower()
     return event.function.name.lower() == focus or hex_addr(event.function.start).lower() == focus
+
+
+def _resolve_function_address(metadata: ProgramMetadata, name_or_addr: str) -> int | None:
+    """将函数名或地址字符串解析为起始地址。"""
+    low = name_or_addr.lower()
+    for function in metadata.functions:
+        if function.name.lower() == low or hex_addr(function.start).lower() == low:
+            return function.start
+    try:
+        return int(name_or_addr, 16) if name_or_addr.lower().startswith("0x") else int(name_or_addr)
+    except ValueError:
+        return None
+
+
+def _resolve_function_end(metadata: ProgramMetadata, name_or_addr: str) -> int | None:
+    """将函数名或地址字符串解析为结束地址。"""
+    low = name_or_addr.lower()
+    for function in metadata.functions:
+        if function.name.lower() == low or hex_addr(function.start).lower() == low:
+            return function.end
+    try:
+        return int(name_or_addr, 16) if name_or_addr.lower().startswith("0x") else int(name_or_addr)
+    except ValueError:
+        return None
 
 
 def _key_from_json(item: dict[str, Any]) -> tuple[str, int]:
@@ -323,12 +357,17 @@ def analyze_flow(
     coverage: CoverageData,
     max_events: int = 0,
     focus_function: str | None = None,
+    address_start: int | None = None,
+    address_end: int | None = None,
 ) -> dict[str, Any]:
     """Map a drcov BB table to an ordered execution-flow report.
 
     DynamoRIO drcov logs basic block entries in the order they were observed.
     This function keeps that order, maps target-module blocks back to IDA
     functions/basic blocks, and emits both raw and consecutive-deduplicated flow.
+
+    address_start/address_end: 只保留此地址范围内的覆盖率事件，
+    用于聚焦分析某个函数或地址区间。
     """
 
     mapped: list[MappedBlock] = []
@@ -339,6 +378,10 @@ def analyze_flow(
         address = _static_address(metadata, coverage, block)
         if address is None:
             skipped_module_events += 1
+            continue
+        if address_start is not None and address < address_start:
+            continue
+        if address_end is not None and address >= address_end:
             continue
         function = _find_function(metadata, address)
         basic_block = _find_basic_block(function, address)
@@ -418,9 +461,11 @@ def diff_flow(
     left: CoverageData,
     right: CoverageData,
     focus_function: str | None = None,
+    address_start: int | None = None,
+    address_end: int | None = None,
 ) -> dict[str, Any]:
-    left_result = analyze_flow(metadata, left, focus_function=focus_function)
-    right_result = analyze_flow(metadata, right, focus_function=focus_function)
+    left_result = analyze_flow(metadata, left, focus_function=focus_function, address_start=address_start, address_end=address_end)
+    right_result = analyze_flow(metadata, right, focus_function=focus_function, address_start=address_start, address_end=address_end)
     left_blocks = {_key_from_json(item) for item in left_result["flow"]}
     right_blocks = {_key_from_json(item) for item in right_result["flow"]}
     left_edges = set(_edge_keys(left_result["flow"]))

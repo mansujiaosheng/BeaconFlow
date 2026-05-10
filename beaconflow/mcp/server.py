@@ -9,6 +9,7 @@ from typing import Any
 from beaconflow.analysis import analyze_coverage, analyze_flow, diff_coverage, diff_flow
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
+from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.reports import coverage_to_markdown, flow_diff_to_markdown, flow_to_markdown
@@ -176,6 +177,21 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
             },
             "required": ["target_path", "qemu_arch", "stdin_cases"],
+        },
+    },
+    "export_ghidra_metadata": {
+        "description": "Export function/basic-block/CFG metadata from a binary using Ghidra headless mode. Supports architectures that IDA cannot open, such as LoongArch.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_path": {"type": "string", "description": "Binary file to analyze with Ghidra."},
+                "output_path": {"type": "string", "description": "Output metadata JSON path."},
+                "ghidra_path": {"type": "string", "description": "Path to analyzeHeadless script. Auto-detected if omitted."},
+                "project_dir": {"type": "string", "description": "Temporary Ghidra project directory."},
+                "script_path": {"type": "string", "description": "Path to ExportBeaconFlowMetadata.py. Default: ghidra_scripts/ in repo."},
+                "timeout": {"type": "integer", "default": 600, "description": "Ghidra headless timeout in seconds."},
+            },
+            "required": ["target_path", "output_path"],
         },
     },
 }
@@ -427,7 +443,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         )
 
     if name == "record_flow":
-        log_path = collect_drcov(
+        run_result = collect_drcov(
             target=arguments["target_path"],
             target_args=arguments.get("target_args") or [],
             output_dir=arguments.get("output_dir") or ".",
@@ -435,21 +451,22 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             drrun_path=arguments.get("drrun_path"),
             stdin_text=arguments.get("stdin"),
             run_cwd=arguments.get("run_cwd"),
+            timeout=arguments.get("timeout") or 120,
         )
         metadata = load_metadata(arguments["metadata_path"])
         result = analyze_flow(
             metadata,
-            load_drcov(log_path),
+            load_drcov(run_result.log_path),
             max_events=arguments.get("max_events") or 0,
             focus_function=arguments.get("focus_function"),
         )
-        result["coverage_path"] = str(log_path)
+        result["coverage_path"] = str(run_result.log_path)
         if arguments.get("format") == "markdown":
             return _tool_result(flow_to_markdown(result))
         return _tool_result(result)
 
     if name == "collect_drcov":
-        log_path = collect_drcov(
+        run_result = collect_drcov(
             target=arguments["target_path"],
             target_args=arguments.get("target_args") or [],
             output_dir=arguments.get("output_dir") or ".",
@@ -457,8 +474,9 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             drrun_path=arguments.get("drrun_path"),
             stdin_text=_ensure_newline(arguments.get("stdin"), arguments.get("auto_newline", False)),
             run_cwd=arguments.get("run_cwd"),
+            timeout=arguments.get("timeout") or 120,
         )
-        return _tool_result({"coverage_path": str(log_path)})
+        return _tool_result(run_result.to_json())
 
     if name == "collect_qemu":
         result = collect_qemu_trace(
@@ -477,6 +495,17 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
     if name == "qemu_explore":
         return _tool_result(_mcp_qemu_explore(arguments))
+
+    if name == "export_ghidra_metadata":
+        result = export_ghidra_metadata(
+            target=arguments["target_path"],
+            output=arguments["output_path"],
+            ghidra_path=arguments.get("ghidra_path"),
+            project_dir=arguments.get("project_dir"),
+            script_path=arguments.get("script_path"),
+            timeout=arguments.get("timeout") or 600,
+        )
+        return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")
 

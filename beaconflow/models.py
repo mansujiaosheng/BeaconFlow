@@ -94,6 +94,9 @@ class DrcovModule:
     start: int
     end: int
     path: str
+    base: int = 0
+    seg_offset: int = 0
+    preferred_base: int = 0
 
     @property
     def name(self) -> str:

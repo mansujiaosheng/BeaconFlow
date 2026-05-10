@@ -8,6 +8,7 @@ from pathlib import Path
 from beaconflow.analysis import analyze_coverage, analyze_flow, diff_coverage, diff_flow
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
+from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.reports import coverage_to_markdown, flow_diff_to_markdown, flow_to_markdown
@@ -36,7 +37,14 @@ def _cmd_diff(args: argparse.Namespace) -> int:
 def _cmd_flow(args: argparse.Namespace) -> int:
     metadata = load_metadata(args.metadata)
     coverage = _load_flow_input(args)
-    result = analyze_flow(metadata, coverage, max_events=args.max_events, focus_function=args.focus_function)
+    address_start, address_end = _resolve_address_range(args, metadata)
+    result = analyze_flow(
+        metadata, coverage,
+        max_events=args.max_events,
+        focus_function=args.focus_function,
+        address_start=address_start,
+        address_end=address_end,
+    )
     text = flow_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
@@ -49,7 +57,13 @@ def _cmd_flow_diff(args: argparse.Namespace) -> int:
     metadata = load_metadata(args.metadata)
     left = _load_address_log_arg(args.left_address_log, args) if args.left_address_log else load_drcov(args.left)
     right = _load_address_log_arg(args.right_address_log, args) if args.right_address_log else load_drcov(args.right)
-    result = diff_flow(metadata, left, right, focus_function=args.focus_function)
+    address_start, address_end = _resolve_address_range(args, metadata)
+    result = diff_flow(
+        metadata, left, right,
+        focus_function=args.focus_function,
+        address_start=address_start,
+        address_end=address_end,
+    )
     text = flow_diff_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
@@ -77,6 +91,24 @@ def _parse_optional_int(value: str | None) -> int | None:
     if value is None:
         return None
     return int(value, 16) if value.lower().startswith("0x") else int(value)
+
+
+def _resolve_address_range(args: argparse.Namespace, metadata):
+    """将 --from/--to 参数（函数名或地址）解析为 address_start/address_end 整数。"""
+    from beaconflow.analysis.flow import _resolve_function_address, _resolve_function_end
+    address_start = None
+    address_end = None
+    from_val = getattr(args, "from_", None)
+    to_val = getattr(args, "to", None)
+    if from_val:
+        address_start = _resolve_function_address(metadata, from_val)
+        if address_start is None:
+            address_start = _parse_optional_int(from_val)
+    if to_val:
+        address_end = _resolve_function_end(metadata, to_val)
+        if address_end is None:
+            address_end = _parse_optional_int(to_val)
+    return address_start, address_end
 
 
 def _cmd_metadata_from_address_log(args: argparse.Namespace) -> int:
@@ -123,7 +155,7 @@ def _load_many_address_logs(paths: list[str], args: argparse.Namespace):
 
 def _cmd_collect(args: argparse.Namespace) -> int:
     stdin_text = _read_stdin_arg(args)
-    log_path = collect_drcov(
+    result = collect_drcov(
         target=args.target,
         target_args=args.target_args,
         output_dir=args.output_dir,
@@ -131,14 +163,16 @@ def _cmd_collect(args: argparse.Namespace) -> int:
         drrun_path=args.drrun,
         stdin_text=stdin_text,
         run_cwd=args.run_cwd,
+        timeout=args.timeout,
+        name=getattr(args, "name", None),
     )
-    print(log_path)
+    print(json.dumps(result.to_json(), indent=2))
     return 0
 
 
 def _cmd_record_flow(args: argparse.Namespace) -> int:
     stdin_text = _read_stdin_arg(args)
-    log_path = collect_drcov(
+    run_result = collect_drcov(
         target=args.target,
         target_args=args.target_args,
         output_dir=args.output_dir,
@@ -146,15 +180,16 @@ def _cmd_record_flow(args: argparse.Namespace) -> int:
         drrun_path=args.drrun,
         stdin_text=stdin_text,
         run_cwd=args.run_cwd,
+        timeout=getattr(args, "timeout", 120),
     )
     metadata = load_metadata(args.metadata)
     result = analyze_flow(
         metadata,
-        load_drcov(log_path),
+        load_drcov(run_result.log_path),
         max_events=args.max_events,
         focus_function=args.focus_function,
     )
-    result["coverage_path"] = str(log_path)
+    result["coverage_path"] = str(run_result.log_path)
     text = flow_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
@@ -177,6 +212,19 @@ def _cmd_collect_qemu(args: argparse.Namespace) -> int:
         name=args.name,
     )
     print(json.dumps(result.to_json(), indent=2))
+    return 0
+
+
+def _cmd_export_ghidra(args: argparse.Namespace) -> int:
+    result = export_ghidra_metadata(
+        target=args.target,
+        output=args.output,
+        ghidra_path=args.ghidra_path,
+        project_dir=args.project_dir,
+        script_path=args.script_path,
+        timeout=args.timeout,
+    )
+    print(json.dumps(result, indent=2))
     return 0
 
 
@@ -423,6 +471,8 @@ def build_parser() -> argparse.ArgumentParser:
     flow.add_argument("--address-max", help="Keep only address-log events below this address.")
     flow.add_argument("--format", choices=("json", "markdown"), default="json")
     flow.add_argument("--focus-function", help="Only keep events mapped to this function name or start address.")
+    flow.add_argument("--from", dest="from_", help="Start address or function name for range filtering (inclusive).")
+    flow.add_argument("--to", dest="to", help="End address or function name for range filtering (exclusive).")
     flow.add_argument("--output")
     flow.set_defaults(func=_cmd_flow)
 
@@ -435,6 +485,8 @@ def build_parser() -> argparse.ArgumentParser:
     right_source.add_argument("--right", help="Right drcov file.")
     right_source.add_argument("--right-address-log", help="Right text address log.")
     flow_diff.add_argument("--focus-function", help="Only compare events mapped to this function name or start address.")
+    flow_diff.add_argument("--from", dest="from_", help="Start address or function name for range filtering (inclusive).")
+    flow_diff.add_argument("--to", dest="to", help="End address or function name for range filtering (exclusive).")
     flow_diff.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
     flow_diff.add_argument("--address-min", help="Keep only address-log events at or above this address.")
     flow_diff.add_argument("--address-max", help="Keep only address-log events below this address.")
@@ -442,15 +494,17 @@ def build_parser() -> argparse.ArgumentParser:
     flow_diff.add_argument("--output")
     flow_diff.set_defaults(func=_cmd_flow_diff)
 
-    collect = sub.add_parser("collect", help="Run a target under bundled DynamoRIO drcov.")
-    collect.add_argument("--target", required=True, help="Executable to run.")
+    collect = sub.add_parser("collect", help="Run a target under bundled DynamoRIO drcov. Supports both PE (Windows) and ELF (via WSL on Windows).")
+    collect.add_argument("--target", required=True, help="Executable to run (PE or ELF).")
     collect.add_argument("--output-dir", default=".", help="Directory for generated drcov logs.")
     collect.add_argument("--arch", choices=("x86", "x64"), default="x64")
-    collect.add_argument("--drrun", help="Optional custom drrun.exe path.")
+    collect.add_argument("--drrun", help="Optional custom drrun path.")
     collect.add_argument("--stdin", help="Text to send to target stdin.")
     collect.add_argument("--stdin-file", help="File contents to send to target stdin.")
     collect.add_argument("--auto-newline", action="store_true", help="Append a newline to --stdin/--stdin-file if missing.")
     collect.add_argument("--run-cwd", help="Working directory for the target process.")
+    collect.add_argument("--timeout", type=int, default=120, help="Timeout in seconds (default: 120).")
+    collect.add_argument("--name", help="Custom name for the drcov log file.")
     collect.add_argument("target_args", nargs=argparse.REMAINDER, help="Arguments passed after -- to the target.")
     collect.set_defaults(func=_cmd_collect)
 
@@ -475,6 +529,7 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--output-dir", default=".")
     record.add_argument("--arch", choices=("x86", "x64"), default="x64")
     record.add_argument("--drrun")
+    record.add_argument("--timeout", type=int, default=120, help="Timeout in seconds (default: 120).")
     record.add_argument("--max-events", type=int, default=0, help="Maximum flow events to return; 0 means all.")
     record.add_argument("--format", choices=("json", "markdown"), default="json")
     record.add_argument("--focus-function", help="Only keep events mapped to this function name or start address.")
@@ -530,6 +585,15 @@ def build_parser() -> argparse.ArgumentParser:
     qemu_explore.add_argument("--output")
     qemu_explore.add_argument("target_args", nargs=argparse.REMAINDER)
     qemu_explore.set_defaults(func=_cmd_qemu_explore)
+
+    export_ghidra = sub.add_parser("export-ghidra-metadata", help="Export metadata from a binary using Ghidra headless mode.")
+    export_ghidra.add_argument("--target", required=True, help="Binary file to analyze with Ghidra.")
+    export_ghidra.add_argument("--output", required=True, help="Output metadata JSON path.")
+    export_ghidra.add_argument("--ghidra-path", help="Path to analyzeHeadless script. Auto-detected if omitted.")
+    export_ghidra.add_argument("--project-dir", help="Temporary Ghidra project directory. Default: next to output file.")
+    export_ghidra.add_argument("--script-path", help="Path to ExportBeaconFlowMetadata.py. Default: ghidra_scripts/ in repo.")
+    export_ghidra.add_argument("--timeout", type=int, default=600, help="Ghidra headless timeout in seconds.")
+    export_ghidra.set_defaults(func=_cmd_export_ghidra)
 
     return parser
 
