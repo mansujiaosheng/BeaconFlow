@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+tests/fixtures/*.exe
+tests/fixtures/*.log
+tests/fixtures/*.json
+tests/fixtures/runs/
+tests/fixtures/*runs/
+tests/fixtures/*.md
+tests/real/

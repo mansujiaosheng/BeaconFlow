@@ -1,0 +1,18 @@
+[project]
+name = "beaconflow"
+version = "0.1.0"
+description = "Headless IDA coverage and control-flow analysis tools for AI agents."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+mcp = ["mcp>=1.0.0"]
+
+[project.scripts]
+beaconflow = "beaconflow.cli:main"
+beaconflow-mcp = "beaconflow.mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
