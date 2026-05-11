@@ -59,7 +59,7 @@ def _extract_block_context(program, block_start, block_end, succs_list, all_bloc
         # 构建操作数字符串
         op_parts = []
         for i in range(cu.getNumOperands()):
-            op_str = cu.getOperandRepresentation(i)
+            op_str = cu.getDefaultOperandRepresentation(i)
             op_parts.append(op_str)
         if op_parts:
             instructions.append("{} {}".format(mnemonic, ", ".join(op_parts)))
