@@ -30,12 +30,14 @@ def _find_ghidra_install() -> Path | None:
     ghidra_home = env.get("GHIDRA_HOME") or env.get("GHIDRA_INSTALL_DIR")
     if ghidra_home:
         return Path(ghidra_home)
-    for candidate in Path("C:/").glob("ghidra_*"):
-        if (candidate / "support").exists():
-            return candidate
-    for candidate in Path.home().glob("ghidra_*"):
-        if (candidate / "support").exists():
-            return candidate
+    # 搜索常见安装目录
+    search_roots = [Path("C:/"), Path.home(), Path("D:/TOOL"), Path("D:/")]
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for candidate in root.glob("ghidra_*"):
+            if (candidate / "support").exists():
+                return candidate
     return None
 
 

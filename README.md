@@ -1,4 +1,4 @@
-# BeaconFlow
+﻿# BeaconFlow
 
 BeaconFlow 是一个面向 AI Agent 的 headless 覆盖率与控制流分析工具。
 
@@ -1324,6 +1324,8 @@ python -m beaconflow.cli sig-match --metadata metadata.json --format markdown --
 | 类别          | 签名                                                   | 说明         |
 | ----------- | ---------------------------------------------------- | ---------- |
 | crypto      | aes, des, rc4, tea, chacha20, sm4, hash, base64, crc | 加密/哈希/编码算法 |
+| crypto      | tea\_cross\_block, chacha20\_cross\_block, ...       | 跨 block 函数级加密识别（XXTEA/BTEA 等 delta 常量分散在多个 block 时自动聚合匹配） |
+| iat\_hook   | iat\_hook                                             | IAT Hook 检测（间接跳转、蹦床跳转、IAT 覆写等，适用于 EzHook 类型题目） |
 | vm          | generic\_vm, vm\_stack                               | 虚拟机解释器特征   |
 | packer      | upx, generic\_packer, packer\_ids                    | 加壳/解壳特征    |
 | anti\_debug | windows, linux, generic                              | 反调试技术      |
@@ -1422,6 +1424,8 @@ python -m beaconflow.cli trace-calls --target ./checker --stdin "AAAA" --timeout
 ```
 
 > **提示**：`trace-calls` 需要 Frida（`pip install frida frida-tools`）。支持 Windows x64（ucrtbase.dll/msvcrt.dll）和 Linux（libc.so.6）。当 `verdict_hint` 为 `not_equal` 时，AI 可以直接看到期望值，从而构造正确输入。
+>
+> **重要**：`trace-calls` 默认启用 `filter_user_only=true`，只保留主模块（用户代码）调用的库函数，自动过滤 CRT/运行库内部噪声（如 C 运行库初始化时的内部 `memcmp` 调用）。如果需要查看所有调用（包括库内部调用），设置 `filter_user_only=false`。结果中还包含 `ai_hints` 字段，提供方向性建议，例如"未捕获到 strcmp/memcmp 比较，程序可能使用自定义比较逻辑"。
 
 ### 运行时比较指令追踪（trace-compare-rt）
 
@@ -1726,6 +1730,115 @@ beaconflow-mcp
 }
 ```
 
+
+### 完整 MCP 配置指南（AI Agent 请仔细阅读）
+
+以下是一份生产级 MCP 配置，包含所有推荐参数。**AI Agent 在配置时应参照此模板**：
+
+```json
+{
+  "mcpServers": {
+    "beaconflow": {
+      "command": "C:\\Users\\YourName\\AppData\\Local\\Programs\\Python\\Python312\\python.exe",
+      "args": ["-m", "beaconflow.mcp.server"],
+      "timeout": 1800,
+      "env": {
+        "GHIDRA_INSTALL_DIR": "D:\\TOOL\\ghidra_12.0.4_PUBLIC",
+        "GHIDRA_HOME": "D:\\TOOL\\ghidra_12.0.4_PUBLIC",
+        "IDA_PATH": "D:\\TOOL\\ida_9.2"
+      },
+      "autoApprove": [
+        "analyze_coverage", "diff_coverage", "analyze_flow", "diff_flow",
+        "metadata_from_address_log", "record_flow", "collect_drcov",
+        "collect_qemu", "qemu_explore", "export_ghidra_metadata",
+        "deflatten_flow", "deflatten_merge", "recover_state_transitions",
+        "branch_rank", "ai_summary", "inspect_block", "inspect_function",
+        "find_decision_points", "inspect_decision_point", "detect_roles",
+        "inspect_role", "trace_values", "trace_compare", "doctor",
+        "input_taint", "feedback_explore", "decompile_function",
+        "normalize_ir", "sig_match", "init_case", "summarize_case",
+        "add_metadata_to_case", "add_run_to_case", "add_report_to_case",
+        "add_note_to_case", "list_case_runs", "list_case_reports",
+        "list_case_notes", "export_wasm_metadata", "trace_calls",
+        "auto_explore_loop", "input_impact", "check_update"
+      ],
+      "alwaysAllow": [
+        "analyze_coverage", "diff_coverage", "analyze_flow", "diff_flow",
+        "metadata_from_address_log", "record_flow", "collect_drcov",
+        "collect_qemu", "qemu_explore", "export_ghidra_metadata",
+        "deflatten_flow", "deflatten_merge", "recover_state_transitions",
+        "branch_rank", "ai_summary", "inspect_block", "inspect_function",
+        "find_decision_points", "inspect_decision_point", "detect_roles",
+        "inspect_role", "trace_values", "trace_compare", "doctor",
+        "input_taint", "feedback_explore", "decompile_function",
+        "normalize_ir", "sig_match", "init_case", "summarize_case",
+        "add_metadata_to_case", "add_run_to_case", "add_report_to_case",
+        "add_note_to_case", "list_case_runs", "list_case_reports",
+        "list_case_notes", "export_wasm_metadata", "trace_calls",
+        "auto_explore_loop", "input_impact", "check_update"
+      ]
+    }
+  }
+}
+```
+
+**配置要点**：
+
+1. **`command`**：必须指向安装了 beaconflow 的 Python 解释器完整路径
+2. **`timeout`**：建议 1800 秒（30 分钟），Ghidra 导出和 QEMU 探索可能耗时较长
+3. **`env`**：必须设置以下环境变量，否则 Ghidra/IDA 相关功能无法找到安装路径：
+   - `GHIDRA_INSTALL_DIR` / `GHIDRA_HOME`：Ghidra 安装目录（两者设一个即可，推荐都设）
+   - `IDA_PATH`：IDA Pro 安装目录
+4. **`autoApprove` / `alwaysAllow`**：建议全部添加，BeaconFlow 的工具都是只读分析型，不会修改目标文件
+
+### 环境变量设置（AI Agent 请先执行）
+
+在配置 MCP 之前，需要先设置系统环境变量。**Windows PowerShell 管理员模式**：
+
+```powershell
+# 设置 Ghidra 路径（替换为你的实际安装路径）
+[Environment]::SetEnvironmentVariable("GHIDRA_INSTALL_DIR", "D:\TOOL\ghidra_12.0.4_PUBLIC", "User")
+[Environment]::SetEnvironmentVariable("GHIDRA_HOME", "D:\TOOL\ghidra_12.0.4_PUBLIC", "User")
+
+# 设置 IDA 路径
+[Environment]::SetEnvironmentVariable("IDA_PATH", "D:\TOOL\ida_9.2", "User")
+
+# 将 IDA 和 Ghidra 添加到 PATH（可选，方便命令行直接调用）
+$userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+[Environment]::SetEnvironmentVariable("PATH", "D:\TOOL\ida_9.2;D:\TOOL\ghidra_12.0.4_PUBLIC\support;$userPath", "User")
+```
+
+**Linux/macOS**：
+
+```bash
+# 添加到 ~/.bashrc 或 ~/.zshrc
+export GHIDRA_INSTALL_DIR=/opt/ghidra_12.0.4_PUBLIC
+export GHIDRA_HOME=/opt/ghidra_12.0.4_PUBLIC
+export IDA_PATH=/opt/ida-9.2
+export PATH="$IDA_PATH:$GHIDRA_HOME/support:$PATH"
+```
+
+> **重要**：设置环境变量后需要重启 IDE/终端才能生效。MCP 配置中的 `env` 字段可以作为备选方案，但系统环境变量优先级更高。
+
+### 与其他 MCP 服务器协同配置
+
+BeaconFlow 通常与以下 MCP 服务器配合使用，建议一起配置：
+
+| MCP 服务器 | 用途 | 配置示例 |
+|-----------|------|---------|
+| **ida-pro-mcp** | IDA Pro 实时反编译/重命名/类型操作 | `"command": "python", "args": ["-m", "ida_pro_mcp.server", "--ida-rpc", "http://127.0.0.1:13337"]` |
+| **ghidra** | Ghidra 实时反编译/重命名 | `"command": "python", "args": ["bridge_mcp_ghidra.py", "--ghidra-server", "http://127.0.0.1:8080/"]` |
+| **jeb** | JEB Android 反编译 | `"command": "uv", "args": ["run", "--directory", "D:\\TOOL\\JEB-MCP", "server.py"]` |
+| **jadx** | JADX Android 反编译 | `"command": "uv", "args": ["run", "--directory", "D:\\TOOL\\jadx-mcp-server", "python", "jadx_mcp_server.py"]` |
+| **x64dbg** | x64dbg 动态调试 | `"url": "http://127.0.0.1:50300/sse"` |
+
+**典型工作流**：
+
+1. **BeaconFlow** 做 headless 覆盖率/控制流/签名分析（不需要打开 GUI）
+2. **IDA/Ghidra MCP** 做实时反编译和交互式分析（需要打开 GUI 并启动 MCP 插件）
+3. **x64dbg MCP** 做动态调试（需要运行 x64dbg 并启动 MCP 插件）
+
+三者互补：BeaconFlow 擅长批量分析和路径探索，IDA/Ghidra MCP 擅长单点深挖，x64dbg 擅长运行时断点调试。
 ### 当前 MCP Tools
 
 | 工具                          | 用途                                                         |
@@ -1764,7 +1877,10 @@ beaconflow-mcp
 | `list_case_reports`         | 列出工作区中的报告                                                  |
 | `list_case_notes`           | 列出工作区中的笔记                                                  |
 | `export_wasm_metadata`      | 从 WASM 文件导出 metadata（纯 Python 解析器）                         |
-| `trace_calls`               | 运行时库函数参数提取（Frida hook strcmp/memcmp/strlen 等）              |
+| `trace_calls`               | 运行时库函数参数提取（Frida hook strcmp/memcmp/strlen 等），默认过滤 CRT 噪声 |
+| `auto_explore_loop`         | 多轮反馈式输入探索，保留更优输入并持续变异                               |
+| `input_impact`              | 黑盒差分输入影响分析，逐位扰动观察输出变化                               |
+| `check_update`              | 检查 GitHub 是否有新版本（非强制，1 小时缓存）                           |
 | `trace_compare_rt`          | 运行时比较指令值提取（Frida hook cmp/test/jcc）                        |
 
 ### `collect_drcov`
