@@ -931,3 +931,75 @@ def trace_compare_to_markdown(result: dict[str, Any], brief: bool = False) -> st
     lines.append("- Use `trace-values` for more detailed value trace including input sites and dispatcher states.")
 
     return "\n".join(lines) + "\n"
+
+
+def input_taint_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
+    summary = result.get("summary", {})
+    sources = result.get("sources", [])
+    sinks = result.get("sinks", [])
+    edges = result.get("edges", [])
+    mappings = result.get("mappings", [])
+    lines = [
+        "# BeaconFlow Input Taint Analysis",
+        "",
+        f"- Input sources: {summary.get('sources', 0)}",
+        f"- Compare sinks: {summary.get('sinks', 0)}",
+        f"- Taint edges: {summary.get('edges', 0)}",
+        f"- Input→Branch mappings: {summary.get('mappings', 0)}",
+        f"- Focus function: {summary.get('focus_function') or '<none>'}",
+        "",
+    ]
+
+    if sources:
+        lines.extend(["## Input Sources", ""])
+        for src in sources[:15]:
+            reg_info = f" → `{src['output_register']}`" if src.get("output_register") else ""
+            lines.append(f"- `{src['function']}:{src['address']}` call=`{src['call_name']}` type=`{src['input_type']}`{reg_info}")
+        if len(sources) > 15:
+            lines.append(f"... {len(sources) - 15} more sources")
+        lines.append("")
+
+    if mappings:
+        lines.extend(["## Input → Branch Mappings", ""])
+        lines.append("*These mappings show which input bytes influence which branch decisions. The most actionable information for AI to modify inputs.*")
+        lines.append("")
+        for m in mappings[:20 if not brief else 10]:
+            offset_info = f" offset={m['input_offset']}" if m.get("input_offset") is not None else ""
+            edge = m.get("edge", {})
+            conf = edge.get("confidence", "unknown")
+            lines.append(
+                f"- `{m['source']['function']}:{m['source']['address']}` → "
+                f"`{m['sink']['address']}` "
+                f"reg=`{edge.get('taint_register', '?')}` "
+                f"conf=`{conf}`{offset_info}"
+            )
+            lines.append(
+                f"  - source: `{m['source']['call_name']}` → "
+                f"sink: `{m['sink']['instruction']}` "
+                f"left=`{m['sink']['left_operand']}` right=`{m['sink']['right_operand']}`"
+            )
+        if len(mappings) > (20 if not brief else 10):
+            lines.append(f"... {len(mappings) - (20 if not brief else 10)} more mappings")
+        lines.append("")
+
+    if not brief and edges:
+        lines.extend(["## Taint Propagation Edges", ""])
+        for e in edges[:15]:
+            path = " → ".join(e.get("propagation_path", [])[:5])
+            lines.append(
+                f"- `{e['function']}:{e['source_address']}` → `{e['sink_address']}` "
+                f"reg=`{e['taint_register']}` conf=`{e['confidence']}`"
+            )
+            if path:
+                lines.append(f"  - path: {path}")
+        if len(edges) > 15:
+            lines.append(f"... {len(edges) - 15} more edges")
+        lines.append("")
+
+    lines.extend(["## AI Guidance", ""])
+    lines.append("- **Input → Branch Mappings** are the most actionable: they tell you which input bytes affect which branch decisions.")
+    lines.append("- The `taint_register` shows which register carries the tainted value from input to comparison.")
+    lines.append("- `confidence=high` means short propagation path (≤3 steps); `low` means long path (≥7 steps) — more likely false positives.")
+    lines.append("- Use `trace-compare` for detailed compare semantics, and `trace-values` for full value trace.")
+
+    return "\n".join(lines) + "\n"

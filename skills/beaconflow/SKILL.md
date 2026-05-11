@@ -157,6 +157,7 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `trace_values` | Trace register/memory/compare values at key decision points. Extracts compare events, input sites, and dispatcher states. Optionally uses coverage data to infer branch results. |
 | `trace_compare` | Extract compare semantics at input check points. Identifies cmp reg/imm, cmp reg/reg, test, strcmp/strncmp/memcmp, strlen, and switch/jump table patterns. Outputs structured comparison information with inferred results. |
 | `doctor` | Check BeaconFlow environment and dependencies. Verifies Python, beaconflow, IDA, Ghidra, DynamoRIO drrun, QEMU, WSL, MCP, and PyYAML. |
+| `input_taint` | Lightweight taint analysis: trace input bytes to branch decisions. Identifies input sources, compare sinks, and register propagation paths. |
 
 ## Key Parameters
 

@@ -6,7 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -15,7 +15,7 @@ from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.models import hex_addr
-from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -47,6 +47,20 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     else:
         text = json.dumps(result, indent=2)
     print(text)
+    return 0
+
+
+def _cmd_input_taint(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    result = analyze_input_taint(
+        metadata,
+        focus_function=args.focus_function,
+    )
+    text = _fmt_markdown(args.format, input_taint_to_markdown, result)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
     return 0
 
 
@@ -1339,6 +1353,13 @@ def build_parser() -> argparse.ArgumentParser:
     doctor.add_argument("--target", help="Check if a target binary file exists.")
     doctor.add_argument("--format", choices=("json", "markdown"), default="markdown")
     doctor.set_defaults(func=_cmd_doctor)
+
+    input_taint = sub.add_parser("input-taint", help="Lightweight taint analysis: trace input bytes to branch decisions.")
+    input_taint.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    input_taint.add_argument("--focus-function", help="Only analyze taint in this function (name or address).")
+    input_taint.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    input_taint.add_argument("--output")
+    input_taint.set_defaults(func=_cmd_input_taint)
 
     ai_summary = sub.add_parser("ai-summary", help="Compact an existing BeaconFlow JSON report into an AI-first digest.")
     ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")

@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -14,7 +14,7 @@ from beaconflow.doctor import doctor_to_markdown, run_doctor
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
-from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -410,6 +410,18 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "target_path": {"type": "string", "description": "Check if a target binary file exists."},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
             },
+        },
+    },
+    "input_taint": {
+        "description": "Lightweight taint analysis: trace input bytes to branch decisions. Identifies input sources (read/recv/scanf), compare sinks (CMP/TEST), and the register propagation paths connecting them.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
+                "focus_function": {"type": "string", "description": "Only analyze taint in this function (name or address)."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+            },
+            "required": ["metadata_path"],
         },
     },
 }
@@ -1008,6 +1020,16 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         )
         if arguments.get("format") == "markdown":
             return _tool_result(doctor_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "input_taint":
+        metadata = load_metadata(arguments["metadata_path"])
+        result = analyze_input_taint(
+            metadata,
+            focus_function=arguments.get("focus_function"),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(input_taint_to_markdown(result))
         return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")
