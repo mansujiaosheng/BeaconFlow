@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -14,7 +14,7 @@ from beaconflow.doctor import doctor_to_markdown, run_doctor
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
-from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -419,6 +419,20 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
                 "focus_function": {"type": "string", "description": "Only analyze taint in this function (name or address)."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+            },
+            "required": ["metadata_path"],
+        },
+    },
+    "feedback_explore": {
+        "description": "Generate input modification plan based on failed compare results. Uses trace_compare to identify failed comparisons, then suggests byte-level patches to fix the input. Supports multi-round exploration strategy.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
+                "focus_function": {"type": "string", "description": "Only explore compares in this function."},
+                "input_file_path": {"type": "string", "description": "Current input file to patch (optional)."},
+                "input_offset_base": {"type": "integer", "description": "Base offset for input patches.", "default": 0},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
             },
             "required": ["metadata_path"],
@@ -1030,6 +1044,25 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         )
         if arguments.get("format") == "markdown":
             return _tool_result(input_taint_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "feedback_explore":
+        metadata = load_metadata(arguments["metadata_path"])
+        trace_compare_result = analyze_trace_compare(
+            metadata,
+            focus_function=arguments.get("focus_function"),
+        )
+        current_input = None
+        if arguments.get("input_file_path"):
+            current_input = Path(arguments["input_file_path"]).read_bytes()
+        result = feedback_auto_explore(
+            metadata,
+            trace_compare_result,
+            current_input=current_input,
+            input_offset_base=arguments.get("input_offset_base", 0),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(feedback_explore_to_markdown(result))
         return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")

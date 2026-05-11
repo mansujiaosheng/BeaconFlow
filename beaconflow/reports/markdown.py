@@ -1003,3 +1003,60 @@ def input_taint_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
     lines.append("- Use `trace-compare` for detailed compare semantics, and `trace-values` for full value trace.")
 
     return "\n".join(lines) + "\n"
+
+
+def feedback_explore_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
+    summary = result.get("summary", {})
+    plan = result.get("plan", {})
+    rounds = plan.get("rounds", [])
+    notes = plan.get("notes", [])
+    lines = [
+        "# BeaconFlow Feedback Auto-Explore",
+        "",
+        f"- Status: {summary.get('status', 'unknown')}",
+        f"- Total failed compares: {summary.get('total_failed_compares', 0)}",
+        f"- Total patches: {summary.get('total_patches', 0)}",
+        f"- High confidence: {summary.get('high_confidence_patches', 0)}",
+        f"- Medium confidence: {summary.get('medium_confidence_patches', 0)}",
+        f"- Low confidence: {summary.get('low_confidence_patches', 0)}",
+        f"- Total rounds: {summary.get('total_rounds', 0)}",
+        "",
+    ]
+
+    if summary.get("status") == "no_failed_compares":
+        lines.append("No failed compares found. The input may already be correct, or no coverage data was provided.")
+        return "\n".join(lines) + "\n"
+
+    for r in rounds:
+        lines.extend([f"## Round {r['round']}: {r['strategy']}", ""])
+        lines.append(f"**Strategy**: {r['description']}")
+        lines.append("")
+        patches = r.get("patches", [])
+        if patches:
+            lines.append("| Offset | Suggested Value | Size | Compare | Confidence | Reason |")
+            lines.append("|--------|----------------|------|---------|------------|--------|")
+            for p in patches[:20 if not brief else 5]:
+                lines.append(
+                    f"| {p['offset']} | `{p['suggested_value']}` | {p['size']} | "
+                    f"`{p['compare_address']}`: `{p['compare_instruction']}` | "
+                    f"`{p['confidence']}` | {p['reason']} |"
+                )
+            if len(patches) > (20 if not brief else 5):
+                lines.append(f"| ... | ... | ... | ... | ... | {len(patches) - (20 if not brief else 5)} more patches |")
+        else:
+            lines.append("No patches for this round.")
+        lines.append("")
+
+    if notes:
+        lines.extend(["## Notes", ""])
+        for note in notes:
+            lines.append(f"- {note}")
+        lines.append("")
+
+    lines.extend(["## AI Guidance", ""])
+    lines.append("- **Round 1 (immediate_fix)** is the most actionable: directly set input bytes to match expected immediate values.")
+    lines.append("- **Round 2 (string_compare)** requires determining expected buffer content; use `trace-values` or dynamic analysis.")
+    lines.append("- **Round 3 (exploration)** requires dynamic analysis; consider running the program with modified input and re-analyzing.")
+    lines.append("- After applying patches, re-run the program and use `trace-compare` again to check if more compares pass.")
+
+    return "\n".join(lines) + "\n"

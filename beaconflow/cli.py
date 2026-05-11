@@ -6,7 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -15,7 +15,7 @@ from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.models import hex_addr
-from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -57,6 +57,29 @@ def _cmd_input_taint(args: argparse.Namespace) -> int:
         focus_function=args.focus_function,
     )
     text = _fmt_markdown(args.format, input_taint_to_markdown, result)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_feedback_explore(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    trace_compare_result = analyze_trace_compare(
+        metadata,
+        focus_function=args.focus_function,
+    )
+    current_input = None
+    if args.input_file:
+        current_input = Path(args.input_file).read_bytes()
+    result = feedback_auto_explore(
+        metadata,
+        trace_compare_result,
+        current_input=current_input,
+        input_offset_base=args.input_offset_base or 0,
+    )
+    text = _fmt_markdown(args.format, feedback_explore_to_markdown, result)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -1360,6 +1383,15 @@ def build_parser() -> argparse.ArgumentParser:
     input_taint.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     input_taint.add_argument("--output")
     input_taint.set_defaults(func=_cmd_input_taint)
+
+    feedback_explore = sub.add_parser("feedback-explore", help="Generate input modification plan based on failed compare results.")
+    feedback_explore.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    feedback_explore.add_argument("--focus-function", help="Only explore compares in this function.")
+    feedback_explore.add_argument("--input-file", help="Current input file to patch (optional).")
+    feedback_explore.add_argument("--input-offset-base", type=int, default=0, help="Base offset for input patches.")
+    feedback_explore.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    feedback_explore.add_argument("--output")
+    feedback_explore.set_defaults(func=_cmd_feedback_explore)
 
     ai_summary = sub.add_parser("ai-summary", help="Compact an existing BeaconFlow JSON report into an AI-first digest.")
     ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")
