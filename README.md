@@ -1647,6 +1647,41 @@ summarize-case 输出：
 ## Notes (1)
 ```
 
+### 示例 5：ISCC2026 re3-lei（WASM + trace-calls）
+
+```powershell
+# 1. 导出 WASM metadata
+python -m beaconflow.cli export-wasm-metadata --target box.wasm --output box_metadata.json
+
+# 2. 角色检测 - 发现 VM dispatcher
+python -m beaconflow.cli detect-roles --metadata box_metadata.json --format markdown
+# → 5 dispatchers, 83 transformers, f84 has 83 successors (VM dispatch table)
+
+# 3. IR 转换 - 分析 XOR 解密循环
+python -m beaconflow.cli normalize-ir --metadata box_metadata.json --name f1 --format markdown
+# → i32.xor with 0x10, loop 0x30 times
+
+# 4. trace-calls - 直接捕获 flag 前缀
+python -m beaconflow.cli trace-calls --target angr_harness.exe --stdin "AAAA" --hook memcmp --format markdown
+```
+
+trace-calls 输出：
+
+```markdown
+## Key Comparisons
+
+### memcmp @ 0x2031
+
+- result: **not_equal** (return=1)
+- buf1: `..z..` (hex: `9d0d7abcaf`)
+- buf2: `ISCC{` (hex: `495343437b`)
+- n: `5`
+
+> **AI hint**: this call compares runtime input-like bytes with a constant-like buffer. The values differ.
+```
+
+> **关键发现**：trace-calls 直接暴露了 flag 前缀 `ISCC{`！AI 可以立即知道输入格式和部分期望值。
+
 ***
 
 ## MCP 使用
