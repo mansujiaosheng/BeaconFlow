@@ -550,6 +550,157 @@ def diff_flow(
     }
 
 
+def rank_input_branches(
+    metadata: ProgramMetadata,
+    coverages: list[CoverageData],
+    labels: list[str] | None = None,
+    roles: list[str] | None = None,
+    focus_function: str | None = None,
+    address_start: int | None = None,
+    address_end: int | None = None,
+) -> dict[str, Any]:
+    """Rank branch points most likely to be input-dependent.
+
+    This is intentionally trace-driven: it does not claim to recover the
+    condition expression. It identifies blocks whose observed outgoing edges or
+    hit counts change across inputs, then ranks the blocks that best separate
+    baseline/better/good traces.
+    """
+    if not coverages:
+        return {"summary": {"error": "no coverage data provided"}}
+
+    if labels is None:
+        labels = [f"trace{i}" for i in range(len(coverages))]
+    if roles is None:
+        roles = ["unknown"] * len(coverages)
+
+    trace_results: list[dict[str, Any]] = []
+    all_edges: dict[tuple[str, int], dict[tuple[str, int], set[str]]] = {}
+    all_hits: dict[tuple[str, int], dict[str, int]] = {}
+    baseline_edges: set[tuple[tuple[str, int], tuple[str, int]]] = set()
+
+    for index, (coverage, label) in enumerate(zip(coverages, labels)):
+        role = roles[index] if index < len(roles) else "unknown"
+        mapped, compressed, _, _, _ = _map_coverage(
+            metadata,
+            coverage,
+            focus_function=focus_function,
+            address_start=address_start,
+            address_end=address_end,
+        )
+        flow_edges = set(_transition_key(left, right) for left, right in zip(compressed, compressed[1:]))
+        if index == 0:
+            baseline_edges = set(flow_edges)
+        hit_counts = Counter(event.key for event in mapped)
+        for edge in flow_edges:
+            all_edges.setdefault(edge[0], {}).setdefault(edge[1], set()).add(label)
+        for key, count in hit_counts.items():
+            all_hits.setdefault(key, {})[label] = count
+        trace_results.append(
+            {
+                "label": label,
+                "role": role,
+                "unique_blocks": len(set(event.key for event in mapped)),
+                "unique_transitions": len(flow_edges),
+            }
+        )
+
+    good_labels = {label for label, role in zip(labels, roles) if role == "good"}
+    better_labels = {label for label, role in zip(labels, roles) if role == "better"}
+    baseline_label = labels[0]
+
+    ranked: list[dict[str, Any]] = []
+    for source, targets in all_edges.items():
+        if not _is_user_key(source):
+            continue
+
+        outgoing = [
+            {
+                "to": _format_key(target),
+                "covered_by": sorted(trace_labels),
+                "coverage_ratio": f"{len(trace_labels)}/{len(labels)}",
+                "baseline_edge": (source, target) in baseline_edges,
+            }
+            for target, trace_labels in sorted(targets.items(), key=lambda item: (item[0][0], item[0][1]))
+        ]
+        new_targets = [
+            target for target in targets
+            if (source, target) not in baseline_edges
+        ]
+        hit_by_label = all_hits.get(source, {})
+        hit_values = list(hit_by_label.values())
+        hit_spread = (max(hit_values) - min(hit_values)) if hit_values else 0
+        good_only_edges = 0
+        better_or_good_edges = 0
+        for target, trace_labels in targets.items():
+            if (source, target) in baseline_edges:
+                continue
+            if trace_labels and trace_labels <= good_labels:
+                good_only_edges += 1
+            if trace_labels & (better_labels | good_labels):
+                better_or_good_edges += 1
+
+        score = 0
+        score += len(new_targets) * 20
+        score += max(0, len(targets) - 1) * 12
+        score += good_only_edges * 25
+        score += better_or_good_edges * 8
+        score += min(hit_spread, 20)
+        if baseline_label not in hit_by_label:
+            score += 5
+        if score == 0:
+            continue
+
+        reason: list[str] = []
+        if new_targets:
+            reason.append("has outgoing edge(s) absent from baseline")
+        if len(targets) > 1:
+            reason.append("observed multiple successors across traces")
+        if good_only_edges:
+            reason.append("has edge(s) only seen in good traces")
+        if hit_spread:
+            reason.append("hit count changes across inputs")
+
+        ranked.append(
+            {
+                "block": _format_key(source),
+                "score": score,
+                "successor_count": len(targets),
+                "new_successors_vs_baseline": len(new_targets),
+                "hit_spread": hit_spread,
+                "hits_by_trace": {label: hit_by_label.get(label, 0) for label in labels},
+                "outgoing_edges": outgoing,
+                "why": reason,
+                "next_action": "Open this block in IDA/Ghidra and inspect the compare/conditional move/table lookup that selects the listed successors.",
+            }
+        )
+
+    ranked.sort(key=lambda item: (-item["score"], item["block"]))
+    return {
+        "summary": {
+            "total_traces": len(coverages),
+            "baseline": baseline_label,
+            "ranked_branch_points": len(ranked),
+            "focus_function": focus_function,
+        },
+        "traces": trace_results,
+        "ranked_branches": ranked[:100],
+        "ai_interpretation": {
+            "purpose": "Rank branch points most likely controlled by input differences.",
+            "how_to_use": [
+                "Start at the highest score block; it best separates baseline from better/good traces.",
+                "A new_successors_vs_baseline value means this input reached an edge the baseline never used.",
+                "hit_spread is useful only with precise trace modes; for QEMU in_asm treat it as weak evidence.",
+            ],
+            "next_steps": [
+                "Use flow-diff around the top block to inspect left-only/right-only ranges.",
+                "If using QEMU in_asm and hit counts matter, recollect with --trace-mode exec,nochain.",
+                "Pair this report with disassembly to recover the actual comparison operands.",
+            ],
+        },
+    }
+
+
 def _identify_dispatchers(
     compressed: list[MappedBlock],
     hot_blocks: Counter[tuple[str, int]],

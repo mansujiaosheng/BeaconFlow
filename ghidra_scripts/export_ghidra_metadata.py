@@ -13,13 +13,14 @@
 import json
 import os
 import sys
+import tempfile
 
 
 def _hex(value):
     return "0x{:x}".format(value)
 
 
-def export_metadata(binary_path, output_path=None):
+def export_metadata(binary_path, output_path=None, project_location=None, project_name=None):
     import pyghidra
 
     ghidra_dir = os.environ.get(
@@ -30,7 +31,12 @@ def export_metadata(binary_path, output_path=None):
     from ghidra.program.model.block import BasicBlockModel
     from ghidra.util.task import ConsoleTaskMonitor
 
-    with pyghidra.open_program(binary_path) as api:
+    if project_location is None:
+        project_location = tempfile.mkdtemp(prefix="beaconflow_pyghidra_")
+    if project_name is None:
+        project_name = "beaconflow_export"
+
+    with pyghidra.open_program(binary_path, project_location=project_location, project_name=project_name, nested_project_location=False) as api:
         program = api.getCurrentProgram()
         fm = program.getFunctionManager()
         block_model = BasicBlockModel(program)

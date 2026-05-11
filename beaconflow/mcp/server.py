@@ -6,13 +6,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, rank_input_branches, recover_state_transitions
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
-from beaconflow.reports import coverage_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -189,6 +189,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "ghidra_path": {"type": "string", "description": "Path to analyzeHeadless script. Auto-detected if omitted."},
                 "project_dir": {"type": "string", "description": "Temporary Ghidra project directory."},
                 "script_path": {"type": "string", "description": "Path to ExportBeaconFlowMetadata.py. Default: ghidra_scripts/ in repo."},
+                "backend": {"type": "string", "enum": ["pyghidra", "headless"], "default": "pyghidra", "description": "Default uses pyghidra; headless keeps the legacy analyzeHeadless script path."},
                 "timeout": {"type": "integer", "default": 600, "description": "Ghidra headless timeout in seconds."},
             },
             "required": ["target_path", "output_path"],
@@ -251,6 +252,28 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "dispatcher_min_hits": {"type": "integer", "default": 2},
                 "dispatcher_min_pred": {"type": "integer", "default": 2},
                 "dispatcher_min_succ": {"type": "integer", "default": 2},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+            },
+            "required": ["metadata_path"],
+        },
+    },
+    "branch_rank": {
+        "description": "Rank input-dependent branch points across bad/better/good drcov or address-log traces.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string"},
+                "bad_coverage_path": {"type": "string"},
+                "bad_address_log_path": {"type": "string"},
+                "better_coverage_paths": {"type": "array", "items": {"type": "string"}},
+                "better_address_log_paths": {"type": "array", "items": {"type": "string"}},
+                "good_coverage_paths": {"type": "array", "items": {"type": "string"}},
+                "good_address_log_paths": {"type": "array", "items": {"type": "string"}},
+                "labels": {"type": "array", "items": {"type": "string"}},
+                "address_min": {"type": "string"},
+                "address_max": {"type": "string"},
+                "block_size": {"type": "integer", "default": 4},
+                "focus_function": {"type": "string"},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
             },
             "required": ["metadata_path"],
@@ -566,6 +589,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             project_dir=arguments.get("project_dir"),
             script_path=arguments.get("script_path"),
             timeout=arguments.get("timeout") or 600,
+            backend=arguments.get("backend") or "pyghidra",
         )
         return _tool_result(result)
 
@@ -637,6 +661,50 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         )
         if arguments.get("format") == "markdown":
             return _tool_result(state_transitions_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "branch_rank":
+        metadata = load_metadata(arguments["metadata_path"])
+        coverages = []
+        labels = []
+        roles = []
+        block_size = arguments.get("block_size", 4)
+        address_min = _parse_optional_int(arguments.get("address_min"))
+        address_max = _parse_optional_int(arguments.get("address_max"))
+
+        def add_trace(path: str, role: str, is_address_log: bool) -> None:
+            if is_address_log:
+                coverages.append(load_address_log(path, block_size=block_size, min_address=address_min, max_address=address_max))
+            else:
+                coverages.append(load_drcov(path))
+            roles.append(role)
+
+        if arguments.get("bad_address_log_path"):
+            add_trace(arguments["bad_address_log_path"], "bad", True)
+        elif arguments.get("bad_coverage_path"):
+            add_trace(arguments["bad_coverage_path"], "bad", False)
+        else:
+            raise ValueError("bad_coverage_path or bad_address_log_path is required")
+
+        for path in arguments.get("better_address_log_paths") or []:
+            add_trace(path, "better", True)
+        for path in arguments.get("better_coverage_paths") or []:
+            add_trace(path, "better", False)
+        for path in arguments.get("good_address_log_paths") or []:
+            add_trace(path, "good", True)
+        for path in arguments.get("good_coverage_paths") or []:
+            add_trace(path, "good", False)
+
+        labels = arguments.get("labels") or [f"{role}{index}" for index, role in enumerate(roles)]
+        result = rank_input_branches(
+            metadata,
+            coverages,
+            labels=labels,
+            roles=roles,
+            focus_function=arguments.get("focus_function"),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(branch_rank_to_markdown(result))
         return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")

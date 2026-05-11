@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import platform
 import shutil
@@ -59,7 +60,13 @@ def export_ghidra_metadata(
     project_name: str = "beaconflow_export",
     script_path: str | Path | None = None,
     timeout: int | None = 600,
+    backend: str = "pyghidra",
 ) -> dict[str, object]:
+    if backend == "pyghidra":
+        return export_ghidra_metadata_pyghidra(target=target, output=output, project_dir=project_dir, project_name=project_name, timeout=timeout)
+    if backend != "headless":
+        raise ValueError(f"unknown Ghidra export backend: {backend}")
+
     headless = ghidra_path or find_ghidra_headless()
     if not headless:
         raise FileNotFoundError(
@@ -118,6 +125,35 @@ def export_ghidra_metadata(
         "output_path": str(output_path),
         "command": command,
         "returncode": completed.returncode,
+        "functions": len(metadata.functions),
+        "basic_blocks": sum(len(f.blocks) for f in metadata.functions),
+    }
+
+
+def export_ghidra_metadata_pyghidra(
+    target: str | Path,
+    output: str | Path,
+    project_dir: str | Path | None = None,
+    project_name: str = "beaconflow_export",
+    timeout: int | None = 600,
+) -> dict[str, object]:
+    """Export metadata through pyghidra, avoiding analyzeHeadless script loading."""
+    if importlib.util.find_spec("pyghidra") is None:
+        raise ImportError("pyghidra is required for the default Ghidra exporter. Install it with `pip install pyghidra`, or use --backend headless.")
+
+    from ghidra_scripts.export_ghidra_metadata import export_metadata
+
+    target_path = Path(target).resolve()
+    output_path = Path(output).resolve()
+    work_dir = Path(project_dir).resolve() if project_dir else Path(tempfile.mkdtemp(prefix="beaconflow_pyghidra_"))
+    export_metadata(str(target_path), str(output_path), project_location=str(work_dir), project_name=project_name)
+
+    from beaconflow.ida import load_metadata
+    metadata = load_metadata(output_path)
+    return {
+        "output_path": str(output_path),
+        "backend": "pyghidra",
+        "returncode": 0,
         "functions": len(metadata.functions),
         "basic_blocks": sum(len(f.blocks) for f in metadata.functions),
     }

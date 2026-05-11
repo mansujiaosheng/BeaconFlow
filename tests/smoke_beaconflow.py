@@ -108,7 +108,8 @@ def main() -> int:
     for old_log in run_dir.glob("drcov.*.log"):
         old_log.unlink()
 
-    coverage_path = collect_drcov(exe, ["alpha"], output_dir=run_dir)
+    run_result = collect_drcov(exe, ["alpha"], output_dir=run_dir)
+    coverage_path = run_result.log_path
     copied_generated = FIXTURES / "simple_pe.drcov.log"
     shutil.copy2(coverage_path, copied_generated)
 

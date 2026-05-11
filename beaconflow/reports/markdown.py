@@ -339,6 +339,61 @@ def state_transitions_to_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def branch_rank_to_markdown(result: dict[str, Any]) -> str:
+    summary = result.get("summary", {})
+    ai = result.get("ai_interpretation", {})
+    lines = [
+        "# BeaconFlow Branch Rank",
+        "",
+        "## Summary",
+        "",
+        f"- Total traces: {summary.get('total_traces', 0)}",
+        f"- Baseline: `{summary.get('baseline', '<none>')}`",
+        f"- Ranked branch points: {summary.get('ranked_branch_points', 0)}",
+        f"- Focus function: {summary.get('focus_function') or '<none>'}",
+        "",
+        "## Traces",
+        "",
+        "| Trace | Role | Blocks | Transitions |",
+        "| --- | --- | ---: | ---: |",
+    ]
+
+    for trace in result.get("traces", []):
+        lines.append(
+            f"| `{trace['label']}` | `{trace['role']}` | "
+            f"{trace['unique_blocks']} | {trace['unique_transitions']} |"
+        )
+
+    branches = result.get("ranked_branches", [])
+    if branches:
+        lines.extend(["", "## Ranked Branches", ""])
+        for index, branch in enumerate(branches[:30], start=1):
+            why = "; ".join(branch.get("why", [])) or "path evidence changed"
+            lines.append(
+                f"{index}. `{branch['block']}` score={branch['score']} "
+                f"succ={branch['successor_count']} new_vs_baseline={branch['new_successors_vs_baseline']} "
+                f"hit_spread={branch['hit_spread']}"
+            )
+            lines.append(f"   - Why: {why}")
+            hits = ", ".join(f"{label}={hits}" for label, hits in branch.get("hits_by_trace", {}).items())
+            if hits:
+                lines.append(f"   - Hits: {hits}")
+            for edge in branch.get("outgoing_edges", [])[:6]:
+                baseline = "baseline" if edge.get("baseline_edge") else "new"
+                lines.append(f"   - -> `{edge['to']}` {baseline} covered_by={edge['coverage_ratio']} traces={edge['covered_by']}")
+        if len(branches) > 30:
+            lines.append(f"... {len(branches) - 30} more ranked branches")
+
+    lines.extend(["", "## AI Interpretation", ""])
+    for item in ai.get("how_to_use", []):
+        lines.append(f"- {item}")
+    lines.extend(["", "## Next Steps", ""])
+    for item in ai.get("next_steps", []):
+        lines.append(f"- {item}")
+
+    return "\n".join(lines) + "\n"
+
+
 def flow_diff_to_markdown(result: dict[str, Any]) -> str:
     summary = result["summary"]
     ai = result["ai_report"]

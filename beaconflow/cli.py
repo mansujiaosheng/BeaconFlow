@@ -5,13 +5,13 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, rank_input_branches, recover_state_transitions
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
-from beaconflow.reports import coverage_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
@@ -149,6 +149,55 @@ def _cmd_recover_state(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_branch_rank(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    coverages = []
+    labels = []
+    roles = []
+
+    if args.bad_address_log:
+        coverages.append(_load_address_log_path(args.bad_address_log, args))
+    else:
+        coverages.append(load_drcov(args.bad))
+    labels.append(args.bad_label or "bad")
+    roles.append("bad")
+
+    better_inputs = args.better_address_log or args.better or []
+    for index, path in enumerate(better_inputs):
+        if args.better_address_log:
+            coverages.append(_load_address_log_path(path, args))
+        else:
+            coverages.append(load_drcov(path))
+        labels.append((args.better_label or [])[index] if args.better_label and index < len(args.better_label) else f"better{index}")
+        roles.append("better")
+
+    good_inputs = args.good_address_log or args.good or []
+    for index, path in enumerate(good_inputs):
+        if args.good_address_log:
+            coverages.append(_load_address_log_path(path, args))
+        else:
+            coverages.append(load_drcov(path))
+        labels.append((args.good_label or [])[index] if args.good_label and index < len(args.good_label) else f"good{index}")
+        roles.append("good")
+
+    address_start, address_end = _resolve_address_range(args, metadata)
+    result = rank_input_branches(
+        metadata,
+        coverages,
+        labels=labels,
+        roles=roles,
+        focus_function=args.focus_function,
+        address_start=address_start,
+        address_end=address_end,
+    )
+    text = branch_rank_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
 def _load_flow_input(args: argparse.Namespace):
     if args.address_log:
         return _load_address_log_arg(args.address_log, args)
@@ -156,6 +205,10 @@ def _load_flow_input(args: argparse.Namespace):
 
 
 def _load_address_log_arg(path: str, args: argparse.Namespace):
+    return _load_address_log_path(path, args)
+
+
+def _load_address_log_path(path: str, args: argparse.Namespace):
     return load_address_log(
         path,
         block_size=args.block_size,
@@ -300,6 +353,7 @@ def _cmd_export_ghidra(args: argparse.Namespace) -> int:
         project_dir=args.project_dir,
         script_path=args.script_path,
         timeout=args.timeout,
+        backend=args.backend,
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -408,6 +462,15 @@ def _cmd_qemu_explore(args: argparse.Namespace) -> int:
             "total_union_blocks": sum(len(function.blocks) for function in metadata.functions),
         },
         "runs": report_runs,
+        "recommended_runs": sorted(
+            report_runs,
+            key=lambda item: (
+                item["verdict"] != "success",
+                -item["new_blocks_vs_baseline"],
+                -item["new_blocks_global"],
+                item["name"],
+            ),
+        )[: max(1, args.keep_top)],
     }
     text = _qemu_explore_to_markdown(report) if args.format == "markdown" else json.dumps(report, indent=2)
     if args.output:
@@ -442,7 +505,109 @@ def _explore_inputs(args: argparse.Namespace) -> list[str | None]:
         values.append(_ensure_newline(value, auto_nl))
     for path in args.stdin_file or []:
         values.append(_ensure_newline(Path(path).read_text(encoding="utf-8"), auto_nl))
+    for value in _mutated_inputs(args):
+        values.append(_ensure_newline(value, auto_nl))
     return values or [None]
+
+
+def _mutated_inputs(args: argparse.Namespace) -> list[str]:
+    patterns = getattr(args, "mutate_format", None)
+    if not patterns:
+        return []
+    if isinstance(patterns, str):
+        patterns = [patterns]
+    all_cases: list[str] = []
+    for pattern in patterns:
+        for value in _mutated_inputs_for_pattern(args, pattern):
+            if value not in all_cases:
+                all_cases.append(value)
+    return all_cases
+
+
+def _mutated_inputs_for_pattern(args: argparse.Namespace, pattern: str) -> list[str]:
+    strategy = getattr(args, "strategy", "byte-flip")
+    limit = max(0, getattr(args, "mutate_limit", 128) or 128)
+    seed, mutable_positions = _seed_and_mutable_positions(pattern)
+    seed = getattr(args, "mutate_seed", None) or seed
+    if getattr(args, "mutate_seed", None):
+        mutable_positions = [index for index, ch in enumerate(seed) if ch not in "{}\r\n"]
+    custom_positions = _parse_mutate_positions(getattr(args, "mutate_positions", None), len(seed))
+    if custom_positions is not None:
+        mutable_positions = custom_positions
+    alphabet = getattr(args, "mutate_alphabet", None) or "0123456789abcdef"
+    cases: list[str] = []
+
+    def add(value: str) -> None:
+        if value not in cases and len(cases) < limit:
+            cases.append(value)
+
+    add(seed)
+    if strategy in {"byte-flip", "all"}:
+        for index in mutable_positions:
+            ch = seed[index]
+            for replacement in alphabet:
+                if replacement != ch:
+                    add(seed[:index] + replacement + seed[index + 1:])
+                if len(cases) >= limit:
+                    return cases
+    if strategy in {"length", "all"}:
+        for delta in (-2, -1, 1, 2, 8):
+            if delta < 0:
+                add(seed[:delta])
+            else:
+                add(seed + (alphabet[0] * delta))
+    return cases[:limit]
+
+
+def _seed_from_mutate_format(pattern: str) -> str:
+    return _seed_and_mutable_positions(pattern)[0]
+
+
+def _seed_and_mutable_positions(pattern: str) -> tuple[str, list[int]]:
+    import re
+
+    output: list[str] = []
+    mutable_positions: list[int] = []
+    cursor = 0
+
+    def repl(match) -> str:
+        count = int(match.group(1))
+        kind = match.group(2)
+        fill = "0" if kind in {"x", "X", "d"} else "A"
+        return fill * count
+
+    for match in re.finditer(r"%(\d+)([xXds])", pattern):
+        output.append(pattern[cursor:match.start()])
+        start = sum(len(part) for part in output)
+        replacement = repl(match)
+        output.append(replacement)
+        mutable_positions.extend(range(start, start + len(replacement)))
+        cursor = match.end()
+    output.append(pattern[cursor:])
+    if not mutable_positions:
+        mutable_positions = [index for index, ch in enumerate(pattern) if ch not in "{}\r\n"]
+    return "".join(output), mutable_positions
+
+
+def _parse_mutate_positions(value: str | None, seed_length: int) -> list[int] | None:
+    if not value:
+        return None
+    positions: set[int] = set()
+    for part in value.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if "-" in item or ":" in item:
+            separator = "-" if "-" in item else ":"
+            left, right = item.split(separator, 1)
+            start = int(left)
+            end = int(right)
+            if separator == ":":
+                end -= 1
+            positions.update(range(start, end + 1))
+        else:
+            positions.add(int(item))
+    return sorted(index for index in positions if 0 <= index < seed_length)
 
 
 def _classify_run(stdout: str, stderr: str, returncode: int, args: argparse.Namespace) -> str:
@@ -499,6 +664,16 @@ def _qemu_explore_to_markdown(report: dict[str, object]) -> str:
     lines.append("- Inputs with nonzero `New vs Baseline` reached code not seen by case000; inspect those first.")
     lines.append("- Different output fingerprints with no path novelty usually mean data-state differences, not control-flow differences.")
     lines.append("- Use the generated metadata path with `flow` or `flow-diff` for detailed block and edge analysis.")
+    if summary["trace_mode"] == "in_asm":
+        lines.append("- QEMU `in_asm` hit counts are translation-log evidence, not exact execution counts; use `exec,nochain` when timing, loop counts, dispatcher frequency, or branch-rank hit deltas matter.")
+    recommended = report.get("recommended_runs", [])
+    if recommended:
+        lines.extend(["", "## Recommended Runs", ""])
+        for run in recommended:
+            lines.append(
+                f"- `{run['name']}` verdict=`{run['verdict']}` new_vs_baseline={run['new_blocks_vs_baseline']} "
+                f"new_global={run['new_blocks_global']} stdin=`{run['stdin_preview']}`"
+            )
     return "\n".join(lines) + "\n"
 
 
@@ -626,6 +801,30 @@ def build_parser() -> argparse.ArgumentParser:
     recover_state_parser.add_argument("--output")
     recover_state_parser.set_defaults(func=_cmd_recover_state)
 
+    branch_rank = sub.add_parser("branch-rank", help="Rank input-dependent branch points across bad/better/good traces.")
+    branch_rank.add_argument("--metadata", required=True)
+    bad_source = branch_rank.add_mutually_exclusive_group(required=True)
+    bad_source.add_argument("--bad", help="Baseline bad drcov log.")
+    bad_source.add_argument("--bad-address-log", help="Baseline bad address log.")
+    better_source = branch_rank.add_mutually_exclusive_group()
+    better_source.add_argument("--better", action="append", help="Better drcov log. Can be repeated.")
+    better_source.add_argument("--better-address-log", action="append", help="Better address log. Can be repeated.")
+    good_source = branch_rank.add_mutually_exclusive_group()
+    good_source.add_argument("--good", action="append", help="Known-good drcov log. Can be repeated.")
+    good_source.add_argument("--good-address-log", action="append", help="Known-good address log. Can be repeated.")
+    branch_rank.add_argument("--bad-label")
+    branch_rank.add_argument("--better-label", action="append")
+    branch_rank.add_argument("--good-label", action="append")
+    branch_rank.add_argument("--focus-function", help="Only analyze events in this function.")
+    branch_rank.add_argument("--from", dest="from_", help="Start address or function name for range filtering (inclusive).")
+    branch_rank.add_argument("--to", dest="to", help="End address or function name for range filtering (exclusive).")
+    branch_rank.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
+    branch_rank.add_argument("--address-min", help="Keep only address-log events at or above this address.")
+    branch_rank.add_argument("--address-max", help="Keep only address-log events below this address.")
+    branch_rank.add_argument("--format", choices=("json", "markdown"), default="json")
+    branch_rank.add_argument("--output")
+    branch_rank.set_defaults(func=_cmd_branch_rank)
+
     collect = sub.add_parser("collect", help="Run a target under bundled DynamoRIO drcov. Supports both PE (Windows) and ELF (via WSL on Windows).")
     collect.add_argument("--target", required=True, help="Executable to run (PE or ELF).")
     collect.add_argument("--output-dir", default=".", help="Directory for generated drcov logs.")
@@ -701,6 +900,13 @@ def build_parser() -> argparse.ArgumentParser:
     qemu_explore.add_argument("--trace-mode", default="in_asm")
     qemu_explore.add_argument("--stdin", action="append", help="One stdin test case. Can be repeated.")
     qemu_explore.add_argument("--stdin-file", action="append", help="One stdin file test case. Can be repeated.")
+    qemu_explore.add_argument("--mutate-template", "--mutate-format", dest="mutate_format", action="append", help="Generate stdin cases from a custom template such as token=%%16x or user:%%8s. Can be repeated.")
+    qemu_explore.add_argument("--mutate-seed", help="Seed input for mutation. Defaults to the zero-filled mutate format.")
+    qemu_explore.add_argument("--mutate-alphabet", default="0123456789abcdef", help="Characters used by byte-flip mutation.")
+    qemu_explore.add_argument("--mutate-positions", help="Comma-separated 0-based positions or ranges to mutate in the seed, for example 0,3,8-15 or 8:16.")
+    qemu_explore.add_argument("--mutate-limit", type=int, default=128, help="Maximum generated mutation cases.")
+    qemu_explore.add_argument("--strategy", choices=("byte-flip", "length", "all"), default="byte-flip", help="Input mutation strategy.")
+    qemu_explore.add_argument("--keep-top", type=int, default=20, help="Number of recommended runs to keep in the report.")
     qemu_explore.add_argument("--auto-newline", action="store_true", help="Append a newline to each --stdin/--stdin-file if missing.")
     qemu_explore.add_argument("--jobs", type=int, default=0, help="Max parallel QEMU workers; 0 means all.")
     qemu_explore.add_argument("--run-cwd")
@@ -724,6 +930,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_ghidra.add_argument("--ghidra-path", help="Path to analyzeHeadless script. Auto-detected if omitted.")
     export_ghidra.add_argument("--project-dir", help="Temporary Ghidra project directory. Default: next to output file.")
     export_ghidra.add_argument("--script-path", help="Path to ExportBeaconFlowMetadata.py. Default: ghidra_scripts/ in repo.")
+    export_ghidra.add_argument("--backend", choices=("pyghidra", "headless"), default="pyghidra", help="Ghidra export backend. Default uses pyghidra; headless keeps the legacy analyzeHeadless script path.")
     export_ghidra.add_argument("--timeout", type=int, default=600, help="Ghidra headless timeout in seconds.")
     export_ghidra.set_defaults(func=_cmd_export_ghidra)
 
