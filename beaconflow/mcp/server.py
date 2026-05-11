@@ -295,6 +295,31 @@ TOOLS: dict[str, dict[str, Any]] = {
             "required": ["report_path"],
         },
     },
+    "inspect_block": {
+        "description": "Show detailed context for a single basic block: instructions, calls, strings, constants, data/code refs, predecessors, successors.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
+                "address": {"type": "string", "description": "Block start address (e.g. 0x1400014c7)."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+            "required": ["metadata_path", "address"],
+        },
+    },
+    "inspect_function": {
+        "description": "Show detailed context for a function and all its basic blocks: instructions, calls, strings, constants per block.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
+                "name": {"type": "string", "description": "Function name (e.g. check_flag)."},
+                "address": {"type": "string", "description": "Function start address (e.g. 0x140001460)."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+            "required": ["metadata_path"],
+        },
+    },
 }
 
 
@@ -731,6 +756,61 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         result = json.loads(Path(arguments["report_path"]).read_text(encoding="utf-8"))
         kind = arguments.get("kind") or infer_report_kind(result)
         return _tool_result(compact_report(kind, result, max_findings=arguments.get("max_findings") or 5))
+
+    if name == "inspect_block":
+        from beaconflow.models import hex_addr as _hex_addr
+        metadata = load_metadata(arguments["metadata_path"])
+        addr = _parse_optional_int(arguments["address"])
+        if addr is None:
+            raise ValueError("Invalid address")
+        for func in metadata.functions:
+            for block in func.blocks:
+                if block.start == addr:
+                    result = {
+                        "function": func.name,
+                        "function_start": _hex_addr(func.start),
+                        "block_start": _hex_addr(block.start),
+                        "block_end": _hex_addr(block.end),
+                        "successors": [_hex_addr(s) for s in block.succs],
+                        "context": block.context.to_json(),
+                    }
+                    return _tool_result(result)
+        raise ValueError(f"Block at {_hex_addr(addr)} not found in metadata")
+
+    if name == "inspect_function":
+        from beaconflow.models import hex_addr as _hex_addr
+        metadata = load_metadata(arguments["metadata_path"])
+        target_func = None
+        if arguments.get("name"):
+            for func in metadata.functions:
+                if func.name == arguments["name"]:
+                    target_func = func
+                    break
+        elif arguments.get("address"):
+            addr = _parse_optional_int(arguments["address"])
+            if addr is not None:
+                for func in metadata.functions:
+                    if func.start == addr:
+                        target_func = func
+                        break
+        if target_func is None:
+            raise ValueError("Function not found in metadata")
+        blocks_data = []
+        for block in target_func.blocks:
+            blocks_data.append({
+                "start": _hex_addr(block.start),
+                "end": _hex_addr(block.end),
+                "successors": [_hex_addr(s) for s in block.succs],
+                "context": block.context.to_json(),
+            })
+        result = {
+            "name": target_func.name,
+            "start": _hex_addr(target_func.start),
+            "end": _hex_addr(target_func.end),
+            "block_count": len(target_func.blocks),
+            "blocks": blocks_data,
+        }
+        return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")
 
