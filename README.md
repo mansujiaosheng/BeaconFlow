@@ -910,6 +910,8 @@ beaconflow-mcp
 | `diff_flow` | 块级/边级执行流对比 |
 | `metadata_from_address_log` | 从地址日志聚类生成 fallback metadata |
 | `branch_rank` | 对 bad/better/good trace 排名输入相关分支点 |
+| `inspect_block` | 查看单个基本块的详细上下文（指令、调用、字符串等） |
+| `inspect_function` | 查看函数及其所有基本块的详细上下文 |
 
 ### `collect_drcov`
 
@@ -1063,6 +1065,40 @@ beaconflow-mcp
   "name_prefix": "trace_region"
 }
 ```
+
+### `inspect_block`
+
+```json
+{
+  "metadata_path": "D:\\case\\metadata.json",
+  "address": "0x1400014c7",
+  "format": "markdown"
+}
+```
+
+返回指定基本块的完整上下文：指令、调用、字符串、常量、数据/代码引用、前驱/后继。
+
+### `inspect_function`
+
+```json
+{
+  "metadata_path": "D:\\case\\metadata.json",
+  "name": "check_flag",
+  "format": "markdown"
+}
+```
+
+或按地址查找：
+
+```json
+{
+  "metadata_path": "D:\\case\\metadata.json",
+  "address": "0x140001460",
+  "format": "markdown"
+}
+```
+
+返回函数及其所有基本块的完整上下文。
 
 ---
 
