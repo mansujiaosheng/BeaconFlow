@@ -20,7 +20,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-_DEFAULT_HOOKS = "strcmp,strncmp,memcmp,strlen,strcpy,strncpy,sprintf,printf,puts,gets,fgets,fread,fwrite"
+_DEFAULT_HOOKS = "strcmp,strncmp,memcmp,strlen,strcpy,strncpy,sprintf,printf,puts,gets,fgets,fread,fwrite,scanf,sscanf"
 
 _FRIDA_SCRIPT_TEMPLATE = r"""
 "use strict";
@@ -393,6 +393,36 @@ function hook_scanf() {
     });
 }
 
+// Hook sscanf
+function hook_sscanf() {
+    var addr = findExport("sscanf");
+    if (!addr) return;
+    Interceptor.attach(addr, {
+        onEnter: function(args) {
+            this.arg0 = args[0];
+            this.arg1 = args[1];
+            this.retAddr = this.returnAddress;
+            this.isUserCall = !filterUserOnly || isUserAddress(this.retAddr);
+        },
+        onLeave: function(retval) {
+            if (!this.isUserCall) return;
+            var src = readStr(this.arg0, maxRead);
+            var fmt = readStr(this.arg1, maxRead);
+            addEvent({
+                function: "sscanf",
+                call_site: this.retAddr ? "0x" + this.retAddr.sub(mainBase).toString(16) : "unknown",
+                return_address: this.retAddr ? "0x" + this.retAddr.toString(16) : "unknown",
+                args: [
+                    {name: "src", pointer: "0x" + this.arg0.toString(16), ascii: src.ascii, bytes_hex: src.hex},
+                    {name: "fmt", pointer: "0x" + this.arg1.toString(16), ascii: fmt.ascii, bytes_hex: fmt.hex}
+                ],
+                return_value: retval.toInt32(),
+                verdict_hint: "input"
+            });
+        }
+    });
+}
+
 // 安装 hooks
 var hookMap = {
     "strcmp": hook_strcmp,
@@ -404,6 +434,7 @@ var hookMap = {
     "gets": hook_gets,
     "fgets": hook_fgets,
     "scanf": hook_scanf,
+    "sscanf": hook_sscanf,
 };
 
 for (var i = 0; i < hookNames.length; i++) {
@@ -564,11 +595,29 @@ def trace_calls(
     if not_equal:
         ai_hints.append(f"发现 {len(not_equal)} 次不相等比较，说明程序对输入进行了校验且当前输入未通过")
     if equal:
-        ai_hints.append(f"发现 {len(equal)} 次相等比较，可能是部分校验通过或常量比较")
+        equal_funcs = set(e.get("function", "") for e in equal)
+        # 检查相等比较是否只出现在非核心函数中
+        equal_args = []
+        for e in equal:
+            for a in e.get("args", []):
+                ascii_val = a.get("ascii", "")
+                if ascii_val and len(ascii_val) > 2:
+                    equal_args.append(ascii_val)
+        if equal_args:
+            ai_hints.append(f"发现 {len(equal)} 次相等比较，比较值为: {', '.join(equal_args[:5])}，可能是状态判断而非输入校验")
+        else:
+            ai_hints.append(f"发现 {len(equal)} 次相等比较，可能是部分校验通过或常量比较")
     if not interesting and events:
-        ai_hints.append("未捕获到 strcmp/memcmp 比较，程序可能使用自定义比较逻辑（如逐字节异或、查表等）")
+        has_input = any(e.get("verdict_hint") == "input" for e in events)
+        has_output = any(e.get("verdict_hint") == "output" for e in events)
+        if has_input and has_output:
+            ai_hints.append("程序有输入输出但未捕获到 strcmp/memcmp 比较，核心校验很可能使用自定义比较逻辑（逐字节异或、查表、内联比较等），建议结合 trace_compare 或静态分析定位校验函数")
+        elif has_output:
+            ai_hints.append("程序有输出但未捕获到 strcmp/memcmp 比较，可能使用自定义比较逻辑或逐字节校验，建议使用 trace_compare 在分支地址设断点")
+        else:
+            ai_hints.append("未捕获到 strcmp/memcmp 比较，程序可能使用自定义比较逻辑（如逐字节异或、查表等）")
     if not events:
-        ai_hints.append("未捕获到任何库函数调用，程序可能是纯计算型或使用了静态链接")
+        ai_hints.append("未捕获到任何库函数调用，程序可能使用内联函数（MSVC 内联 strcmp/memcmp）或静态链接，建议使用 trace_compare 或 DynamoRIO 覆盖率分析")
 
     summary = {
         "total_events": len(events),
