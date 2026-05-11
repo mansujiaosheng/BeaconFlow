@@ -140,6 +140,47 @@ def find_decision_points(
     return results
 
 
+def analyze_decision_points(
+    metadata: ProgramMetadata,
+    focus_function: str | None = None,
+) -> dict[str, Any]:
+    # 查找所有 decision points
+    decision_points = find_decision_points(metadata, focus_function=focus_function)
+
+    # 统计各优先级数量
+    priority_counts = {"critical": 0, "high": 0, "medium": 0, "low": 0}
+    for dp in decision_points:
+        p = dp.get("ai_priority", "low")
+        if p in priority_counts:
+            priority_counts[p] += 1
+
+    return {
+        "summary": {
+            "total": len(decision_points),
+            "critical": priority_counts["critical"],
+            "high": priority_counts["high"],
+            "medium": priority_counts["medium"],
+            "low": priority_counts["low"],
+            "focus_function": focus_function,
+        },
+        "decision_points": decision_points,
+    }
+
+
+def inspect_decision_point(
+    metadata: ProgramMetadata,
+    address: int,
+) -> dict[str, Any] | None:
+    # 在所有 decision points 中查找指定地址
+    for func in metadata.functions:
+        for block in func.blocks:
+            if block.start == address:
+                dp_list = _scan_block_for_decision(func, block)
+                if dp_list:
+                    return dp_list[0]
+    return None
+
+
 def _scan_block_for_decision(func: Any, block: Any) -> list[dict[str, Any]]:
     instructions = list(block.context.instructions)
     results: list[dict[str, Any]] = []

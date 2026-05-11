@@ -70,6 +70,8 @@ def coverage_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
         for item in top_covered:
             lines.append(f"| `{item['name']}` | `{item['start']}` | {item['coverage_percent']}% |")
         return "\n".join(lines) + "\n"
+
+
     lines.extend(["## Covered Functions", "", "| Function | Address | Blocks | Coverage |", "| --- | --- | ---: | ---: |"])
 
     for item in result["covered_functions"][:100]:
@@ -691,5 +693,46 @@ def flow_diff_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
             f"- `{item['function']}:{item['block_start']}` "
             f"left={item['left_hits']} right={item['right_hits']} delta={item['delta']}"
         )
+
+    return "\n".join(lines) + "\n"
+
+
+def decision_points_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
+    summary = result.get("summary", {})
+    decision_points = result.get("decision_points", [])
+    lines = [
+        "# BeaconFlow Decision Points",
+        "",
+        f"- Total decision points: {summary.get('total', 0)}",
+        f"- Critical: {summary.get('critical', 0)} | High: {summary.get('high', 0)} | Medium: {summary.get('medium', 0)} | Low: {summary.get('low', 0)}",
+        f"- Focus function: {summary.get('focus_function') or '<none>'}",
+        "",
+    ]
+
+    priority_order = ["critical", "high", "medium", "low"]
+    for priority in priority_order:
+        items = [dp for dp in decision_points if dp["ai_priority"] == priority]
+        if not items:
+            continue
+        if brief and priority in ("medium", "low") and summary.get("critical", 0) + summary.get("high", 0) > 0:
+            continue
+        lines.append(f"## {priority.upper()} Priority ({len(items)})")
+        lines.append("")
+        for dp in items[:20 if not brief else 5]:
+            lines.append(f"- `{dp['function']}:{dp['address']}` type=`{dp['type']}`")
+            if dp.get("call_instruction"):
+                lines.append(f"  - call: `{dp['call_instruction']}()`")
+            if dp.get("compare_instruction"):
+                lines.append(f"  - compare: `{dp['compare_instruction']}`")
+            if dp.get("branch_instruction"):
+                lines.append(f"  - branch: `{dp['branch_instruction']}`")
+            lines.append(f"  - reason: {dp['reason']}")
+            if dp.get("successors"):
+                lines.append(f"  - successors: {', '.join(f'`{s}`' for s in dp['successors'])}")
+            if dp.get("taken"):
+                lines.append(f"  - taken: `{dp['taken']}`")
+        if len(items) > (20 if not brief else 5):
+            lines.append(f"... {len(items) - (20 if not brief else 5)} more {priority} priority points")
+        lines.append("")
 
     return "\n".join(lines) + "\n"

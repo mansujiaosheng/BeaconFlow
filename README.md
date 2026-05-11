@@ -773,6 +773,67 @@ python -m beaconflow.cli inspect-function --metadata metadata.json --address 0x1
 
 > **提示**：block context 在 Ghidra/IDA 导出时默认启用。使用 `--no-context` 可跳过（加快导出速度）。
 
+### 查找决策点（Decision Points）
+
+`find-decision-points` 命令从 metadata 的 block context 中自动识别关键判断点，并按 AI 优先级排序。**让 AI 不只看到分支地址，还能直接看到"这里做了什么判断"**。
+
+```powershell
+# 查找所有决策点
+python -m beaconflow.cli find-decision-points --metadata metadata.json --format markdown
+
+# 只查找某个函数中的决策点
+python -m beaconflow.cli find-decision-points --metadata metadata.json --focus-function check_flag --format markdown
+
+# 精简模式（只显示 critical/high 优先级）
+python -m beaconflow.cli find-decision-points --metadata metadata.json --format markdown-brief
+
+# 输出到文件
+python -m beaconflow.cli find-decision-points --metadata metadata.json --format json --output decision_points.json
+```
+
+识别的决策点类型：
+
+| 类型 | 模式 | AI 优先级 | 说明 |
+| --- | --- | --- | --- |
+| `checker_call` | `strcmp/memcmp/strlen + jcc` | critical | 字符串/内存比较后的条件分支 |
+| `jump_table` | `JMP [reg]` / `SHL+ADD+JMP` | high | switch/jump table 分发 |
+| `cmp_jcc` | `CMP + JZ/JNE/...` | medium | 比较后条件分支 |
+| `test_jcc` | `TEST + JZ/JNE/...` | medium | 位测试后条件分支 |
+| `cmovcc` | `CMOVE/CMOVNE/...` | low | 条件移动（数据选择） |
+| `setcc` | `SETNE/SETZ/...` | low | 条件置位（标志转布尔） |
+
+输出示例：
+
+```markdown
+# BeaconFlow Decision Points
+
+- Total decision points: 6
+- Critical: 0 | High: 2 | Medium: 2 | Low: 2
+- Focus function: <none>
+
+## HIGH Priority (2)
+
+- `check_flag:0x401010` type=`test_jcc`
+  - call: `strcmp()`
+  - compare: `TEST EAX, EAX`
+  - branch: `JNE 0x401040`
+  - reason: Bit test (TEST) followed by conditional branch
+  - successors: `0x401020`
+  - taken: `0x401040`
+```
+
+### 检查单个决策点
+
+`inspect-decision-point` 命令查看某个地址的决策点详情：
+
+```powershell
+python -m beaconflow.cli inspect-decision-point --metadata metadata.json --address 0x401010
+```
+
+输出包含决策点类型、优先级、比较/分支指令、后继块、以及关联的 block context（指令、调用、字符串等）。
+
+> **提示**：Decision Points 依赖 block context 中的指令信息。使用 Ghidra/IDA 导出 metadata 时默认包含 context。
+
 ---
 
 ## 完整案例：ACTF flagchecker（LoongArch）
@@ -912,6 +973,8 @@ beaconflow-mcp
 | `branch_rank` | 对 bad/better/good trace 排名输入相关分支点 |
 | `inspect_block` | 查看单个基本块的详细上下文（指令、调用、字符串等） |
 | `inspect_function` | 查看函数及其所有基本块的详细上下文 |
+| `find_decision_points` | 查找并优先排序决策点（cmp+jcc、checker calls、cmovcc、setcc、jump tables） |
+| `inspect_decision_point` | 查看单个决策点的详细信息 |
 
 ### `collect_drcov`
 
@@ -1099,6 +1162,30 @@ beaconflow-mcp
 ```
 
 返回函数及其所有基本块的完整上下文。
+
+### `find_decision_points`
+
+```json
+{
+  "metadata_path": "D:\\case\\metadata.json",
+  "focus_function": "check_flag",
+  "format": "json"
+}
+```
+
+返回所有决策点，按 AI 优先级排序（critical > high > medium > low）。每个决策点包含类型、比较/分支指令、调用函数、后继块、优先级和原因。
+
+### `inspect_decision_point`
+
+```json
+{
+  "metadata_path": "D:\\case\\metadata.json",
+  "address": "0x401010",
+  "format": "markdown"
+}
+```
+
+返回指定地址的决策点详情，包含类型、优先级、比较/分支指令、后继块和关联的 block context。
 
 ---
 

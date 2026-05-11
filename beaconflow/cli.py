@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -13,7 +14,7 @@ from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.models import hex_addr
-from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -278,6 +279,80 @@ def _cmd_inspect_function(args: argparse.Namespace) -> int:
         text = json.dumps(result, indent=2)
     print(text)
     return 0
+
+
+def _cmd_find_decision_points(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    result = analyze_decision_points(metadata, focus_function=args.focus_function)
+    text = _fmt_markdown(args.format, decision_points_to_markdown, result)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_inspect_decision_point(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    addr = int(args.address, 16) if args.address.startswith("0x") else int(args.address)
+    result = inspect_decision_point(metadata, addr)
+    if result is None:
+        print(f"No decision point found at {hex_addr(addr)}.", file=sys.stderr)
+        return 1
+    if args.format == "markdown":
+        text = _inspect_decision_point_to_markdown(result)
+    else:
+        text = json.dumps(result, indent=2)
+    print(text)
+    return 0
+
+
+def _inspect_decision_point_to_markdown(dp: dict[str, Any]) -> str:
+    lines = [
+        f"# Decision Point `{dp['address']}`",
+        "",
+        f"- Function: `{dp['function']}`",
+        f"- Type: `{dp['type']}`",
+        f"- AI Priority: `{dp['ai_priority']}`",
+        f"- Reason: {dp['reason']}",
+        "",
+    ]
+    if dp.get("call_instruction"):
+        lines.append(f"- Call: `{dp['call_instruction']}()`")
+    if dp.get("compare_instruction"):
+        lines.append(f"- Compare: `{dp['compare_instruction']}`")
+    if dp.get("branch_instruction"):
+        lines.append(f"- Branch: `{dp['branch_instruction']}`")
+    if dp.get("successors"):
+        lines.append(f"- Successors: {', '.join(f'`{s}`' for s in dp['successors'])}")
+    if dp.get("taken"):
+        lines.append(f"- Taken: `{dp['taken']}`")
+    if dp.get("fallthrough"):
+        lines.append(f"- Fallthrough: `{dp['fallthrough']}`")
+    if dp.get("target"):
+        lines.append(f"- Target: `{dp['target']}`")
+    lines.append("")
+    ctx = dp.get("related_block_context")
+    if ctx and isinstance(ctx, dict):
+        lines.append("## Related Block Context")
+        lines.append("")
+        if ctx.get("instructions"):
+            lines.append("### Instructions")
+            lines.append("```")
+            for insn in ctx["instructions"]:
+                lines.append(insn)
+            lines.append("```")
+            lines.append("")
+        if ctx.get("calls"):
+            lines.append(f"### Calls: {', '.join(f'`{c}`' for c in ctx['calls'])}")
+            lines.append("")
+        if ctx.get("strings"):
+            lines.append(f"### Strings: {', '.join(repr(s) for s in ctx['strings'])}")
+            lines.append("")
+        if ctx.get("constants"):
+            lines.append(f"### Constants: {', '.join(f'`{c}`' for c in ctx['constants'])}")
+            lines.append("")
+    return "\n".join(lines) + "\n"
 
 
 def _inspect_block_to_markdown(result: dict[str, Any]) -> str:
@@ -1063,6 +1138,19 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_func.add_argument("--address", help="Function start address (e.g. 0x140001460).")
     inspect_func.add_argument("--format", choices=("json", "markdown"), default="markdown")
     inspect_func.set_defaults(func=_cmd_inspect_function)
+
+    find_dp = sub.add_parser("find-decision-points", help="Find and prioritize decision points (cmp+jcc, test+jcc, checker calls, cmovcc, setcc, jump tables).")
+    find_dp.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    find_dp.add_argument("--focus-function", help="Only find decision points in this function (name or address).")
+    find_dp.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    find_dp.add_argument("--output")
+    find_dp.set_defaults(func=_cmd_find_decision_points)
+
+    inspect_dp = sub.add_parser("inspect-decision-point", help="Inspect a single decision point by block address.")
+    inspect_dp.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    inspect_dp.add_argument("--address", required=True, help="Block start address of the decision point (e.g. 0x1400014c7).")
+    inspect_dp.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    inspect_dp.set_defaults(func=_cmd_inspect_decision_point)
 
     ai_summary = sub.add_parser("ai-summary", help="Compact an existing BeaconFlow JSON report into an AI-first digest.")
     ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")
