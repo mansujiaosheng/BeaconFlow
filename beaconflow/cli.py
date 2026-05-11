@@ -12,6 +12,7 @@ from beaconflow.coverage.runner import collect_drcov
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
+from beaconflow.models import hex_addr
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
 
 
@@ -207,6 +208,152 @@ def _cmd_branch_rank(args: argparse.Namespace) -> int:
     else:
         print(text)
     return 0
+
+
+def _cmd_inspect_block(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    addr = int(args.address, 16) if args.address.startswith("0x") else int(args.address)
+    for func in metadata.functions:
+        for block in func.blocks:
+            if block.start == addr:
+                result = {
+                    "function": func.name,
+                    "function_start": hex_addr(func.start),
+                    "block_start": hex_addr(block.start),
+                    "block_end": hex_addr(block.end),
+                    "successors": [hex_addr(s) for s in block.succs],
+                    "context": block.context.to_json(),
+                }
+                if args.format == "markdown":
+                    text = _inspect_block_to_markdown(result)
+                else:
+                    text = json.dumps(result, indent=2)
+                print(text)
+                return 0
+    print(f"Block at {hex_addr(addr)} not found in metadata.", file=sys.stderr)
+    return 1
+
+
+def _cmd_inspect_function(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    target_func = None
+    if args.name:
+        for func in metadata.functions:
+            if func.name == args.name:
+                target_func = func
+                break
+    elif args.address:
+        addr = int(args.address, 16) if args.address.startswith("0x") else int(args.address)
+        for func in metadata.functions:
+            if func.start == addr:
+                target_func = func
+                break
+    else:
+        print("Either --name or --address is required.", file=sys.stderr)
+        return 1
+
+    if target_func is None:
+        print(f"Function not found in metadata.", file=sys.stderr)
+        return 1
+
+    blocks_data = []
+    for block in target_func.blocks:
+        blocks_data.append({
+            "start": hex_addr(block.start),
+            "end": hex_addr(block.end),
+            "successors": [hex_addr(s) for s in block.succs],
+            "context": block.context.to_json(),
+        })
+
+    result = {
+        "name": target_func.name,
+        "start": hex_addr(target_func.start),
+        "end": hex_addr(target_func.end),
+        "block_count": len(target_func.blocks),
+        "blocks": blocks_data,
+    }
+    if args.format == "markdown":
+        text = _inspect_function_to_markdown(result)
+    else:
+        text = json.dumps(result, indent=2)
+    print(text)
+    return 0
+
+
+def _inspect_block_to_markdown(result: dict[str, Any]) -> str:
+    lines = [
+        f"# Block `{result['block_start']}`",
+        "",
+        f"- Function: `{result['function']}` (starts at `{result['function_start']}`)",
+        f"- Range: `{result['block_start']}` - `{result['block_end']}`",
+        f"- Successors: {', '.join(f'`{s}`' for s in result['successors']) or '<none>'}",
+        "",
+    ]
+    ctx = result.get("context", {})
+    if ctx:
+        lines.append("## Context")
+        lines.append("")
+        if ctx.get("instructions"):
+            lines.append("### Instructions")
+            lines.append("```")
+            for insn in ctx["instructions"]:
+                lines.append(insn)
+            lines.append("```")
+            lines.append("")
+        if ctx.get("calls"):
+            lines.append(f"### Calls: {', '.join(f'`{c}`' for c in ctx['calls'])}")
+            lines.append("")
+        if ctx.get("strings"):
+            lines.append(f"### Strings: {', '.join(repr(s) for s in ctx['strings'])}")
+            lines.append("")
+        if ctx.get("constants"):
+            lines.append(f"### Constants: {', '.join(f'`{c}`' for c in ctx['constants'])}")
+            lines.append("")
+        if ctx.get("data_refs"):
+            lines.append(f"### Data Refs: {', '.join(f'`{r}`' for r in ctx['data_refs'])}")
+            lines.append("")
+        if ctx.get("code_refs"):
+            lines.append(f"### Code Refs: {', '.join(f'`{r}`' for r in ctx['code_refs'])}")
+            lines.append("")
+        if ctx.get("predecessors"):
+            lines.append(f"### Predecessors: {', '.join(f'`{p}`' for p in ctx['predecessors'])}")
+            lines.append("")
+        if ctx.get("successors"):
+            lines.append(f"### Successors: {', '.join(f'`{s}`' for s in ctx['successors'])}")
+            lines.append("")
+    else:
+        lines.append("*No context available (re-export metadata with context enabled).*")
+    return "\n".join(lines) + "\n"
+
+
+def _inspect_function_to_markdown(result: dict[str, Any]) -> str:
+    lines = [
+        f"# Function `{result['name']}`",
+        "",
+        f"- Range: `{result['start']}` - `{result['end']}`",
+        f"- Blocks: {result['block_count']}",
+        "",
+        "## Blocks",
+        "",
+    ]
+    for block in result["blocks"]:
+        lines.append(f"### `{block['start']}` - `{block['end']}`")
+        lines.append(f"- Successors: {', '.join(f'`{s}`' for s in block['successors']) or '<none>'}")
+        ctx = block.get("context", {})
+        if ctx:
+            parts = []
+            if ctx.get("instructions"):
+                parts.append(f"insn: {', '.join(ctx['instructions'][:5])}")
+            if ctx.get("calls"):
+                parts.append(f"calls: {', '.join(f'`{c}`' for c in ctx['calls'][:3])}")
+            if ctx.get("strings"):
+                parts.append(f"str: {', '.join(repr(s) for s in ctx['strings'][:3])}")
+            if ctx.get("constants"):
+                parts.append(f"const: {', '.join(f'`{c}`' for c in ctx['constants'][:5])}")
+            if parts:
+                lines.append(f"- Context: {' | '.join(parts)}")
+        lines.append("")
+    return "\n".join(lines) + "\n"
 
 
 def _cmd_ai_summary(args: argparse.Namespace) -> int:
@@ -903,6 +1050,19 @@ def build_parser() -> argparse.ArgumentParser:
     branch_rank.add_argument("--top", type=int, default=10, help="Only show top N ranked branches in markdown report (default: 10).")
     branch_rank.add_argument("--output")
     branch_rank.set_defaults(func=_cmd_branch_rank)
+
+    inspect_block = sub.add_parser("inspect-block", help="Show detailed context for a single basic block.")
+    inspect_block.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    inspect_block.add_argument("--address", required=True, help="Block start address (e.g. 0x1400014c7).")
+    inspect_block.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    inspect_block.set_defaults(func=_cmd_inspect_block)
+
+    inspect_func = sub.add_parser("inspect-function", help="Show detailed context for a function and its blocks.")
+    inspect_func.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    inspect_func.add_argument("--name", help="Function name (e.g. check_flag).")
+    inspect_func.add_argument("--address", help="Function start address (e.g. 0x140001460).")
+    inspect_func.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    inspect_func.set_defaults(func=_cmd_inspect_function)
 
     ai_summary = sub.add_parser("ai-summary", help="Compact an existing BeaconFlow JSON report into an AI-first digest.")
     ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")
