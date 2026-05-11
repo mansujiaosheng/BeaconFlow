@@ -20,10 +20,58 @@ def hex_addr(value: int) -> str:
 
 
 @dataclass(frozen=True)
+class BlockContext:
+    instructions: tuple[str, ...] = ()
+    calls: tuple[str, ...] = ()
+    strings: tuple[str, ...] = ()
+    constants: tuple[int, ...] = ()
+    data_refs: tuple[str, ...] = ()
+    code_refs: tuple[str, ...] = ()
+    predecessors: tuple[str, ...] = ()
+    successors: tuple[str, ...] = ()
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "BlockContext":
+        if not data:
+            return cls()
+        return cls(
+            instructions=tuple(data.get("instructions", ())),
+            calls=tuple(data.get("calls", ())),
+            strings=tuple(data.get("strings", ())),
+            constants=tuple(data.get("constants", ())),
+            data_refs=tuple(data.get("data_refs", ())),
+            code_refs=tuple(data.get("code_refs", ())),
+            predecessors=tuple(data.get("predecessors", ())),
+            successors=tuple(data.get("successors", ())),
+        )
+
+    def to_json(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        if self.instructions:
+            result["instructions"] = list(self.instructions)
+        if self.calls:
+            result["calls"] = list(self.calls)
+        if self.strings:
+            result["strings"] = list(self.strings)
+        if self.constants:
+            result["constants"] = [hex_addr(x) if isinstance(x, int) else x for x in self.constants]
+        if self.data_refs:
+            result["data_refs"] = list(self.data_refs)
+        if self.code_refs:
+            result["code_refs"] = list(self.code_refs)
+        if self.predecessors:
+            result["predecessors"] = list(self.predecessors)
+        if self.successors:
+            result["successors"] = list(self.successors)
+        return result
+
+
+@dataclass(frozen=True)
 class BasicBlock:
     start: int
     end: int
     succs: tuple[int, ...] = ()
+    context: BlockContext = field(default_factory=BlockContext)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "BasicBlock":
@@ -31,14 +79,19 @@ class BasicBlock:
             start=parse_int(data["start"]),
             end=parse_int(data["end"]),
             succs=tuple(parse_int(x) for x in data.get("succs", ())),
+            context=BlockContext.from_json(data.get("context", {})),
         )
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        result: dict[str, Any] = {
             "start": hex_addr(self.start),
             "end": hex_addr(self.end),
             "succs": [hex_addr(x) for x in self.succs],
         }
+        ctx = self.context.to_json()
+        if ctx:
+            result["context"] = ctx
+        return result
 
 
 @dataclass(frozen=True)
