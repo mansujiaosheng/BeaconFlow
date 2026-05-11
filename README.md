@@ -969,6 +969,359 @@ python -m beaconflow.cli trace-values --metadata metadata.json --format markdown
 
 > **提示**：`Immediate Compares` 是最有价值的输出——右操作数是常量，AI 可以直接判断"输入应该接近这个值"。结合覆盖率数据时，`branch_result` 会显示 `taken`/`fallthrough`/`fail`，帮助 AI 理解比较是否成功。
 
+### 比较语义提取（Trace Compare）
+
+`trace-compare` 命令专门提取程序中的"输入校验点"，输出结构化的比较语义信息。与 `trace-values` 不同，它更聚焦于比较的语义分类（cmp_imm/cmp_reg/test/strcmp/memcmp/switch），并区分成功/失败的比较。
+
+```powershell
+# 基本用法
+python -m beaconflow.cli trace-compare --metadata metadata.json --format markdown
+
+# 结合覆盖率数据推断比较结果
+python -m beaconflow.cli trace-compare --metadata metadata.json --coverage drcov.log --format markdown
+
+# 聚焦某个函数
+python -m beaconflow.cli trace-compare --metadata metadata.json --focus-function check_flag --format json
+```
+
+输出示例：
+
+```markdown
+# BeaconFlow Trace Compare
+
+- Total compare points: 5
+- Failed compares (not_equal): 2
+- Passed compares (equal): 1
+
+## Compare Types
+
+- `cmp_imm`: 2
+- `strcmp`: 1
+- `test`: 1
+- `switch`: 1
+
+## Failed Compares (Input Check Failures)
+
+- `check_flag:0x401000` type=`cmp_imm` left=`EAX` right=`0x41`
+- `check_flag:0x401010` type=`strcmp` left=`arg1` right=`arg2`
+```
+
+> **提示**：`Failed Compares` 是最有价值的输出——AI 可以直接看到哪些比较失败了，从而知道"失败原因"。对于 `cmp_imm` 类型，`right` 字段是常量，AI 可以直接判断输入应该匹配什么值。
+
+### 环境诊断（Doctor）
+
+`doctor` 命令检查 BeaconFlow 的所有依赖项是否可用，减少环境问题带来的使用成本。
+
+```powershell
+# 检查所有依赖
+python -m beaconflow.cli doctor
+
+# 检查特定 QEMU 架构
+python -m beaconflow.cli doctor --qemu-arch loongarch64
+
+# 检查目标文件是否存在
+python -m beaconflow.cli doctor --target ./challenge.elf
+
+# JSON 格式输出
+python -m beaconflow.cli doctor --format json
+```
+
+输出示例：
+
+```markdown
+# BeaconFlow Doctor
+
+- OK: 5
+- FAIL: 1
+- WARN: 3
+
+[OK] Python: Python 3.12.0
+[OK] beaconflow: beaconflow 0.1.0 importable
+[WARN] IDA: IDA idat64 not in PATH
+[OK] pyghidra: pyghidra installed
+[OK] Ghidra: Ghidra found (C:\ghidra)
+[FAIL] drrun x64: drrun x64 not found
+[WARN] qemu-loongarch64: qemu-loongarch64 not found
+[OK] WSL: WSL available
+[OK] MCP: mcp package installed
+
+## Action Required
+
+- **drrun x64**: drrun x64 not found
+```
+
+> **提示**：`FAIL` 项表示必需依赖缺失，需要安装。`WARN` 项表示可选依赖未安装，相关功能不可用但不影响核心功能。
+
+### 输入污点分析（Input Taint）
+
+`input-taint` 命令从输入点（read/recv/scanf）出发，通过寄存器传递链追踪到比较/分支点，输出"输入偏移 → 分支"的映射。让 AI 知道"第 N 个字节影响了哪个分支"。
+
+```powershell
+# 基本用法
+python -m beaconflow.cli input-taint --metadata metadata.json --format markdown
+
+# 聚焦某个函数
+python -m beaconflow.cli input-taint --metadata metadata.json --focus-function check_flag --format json
+```
+
+输出示例：
+
+```markdown
+# BeaconFlow Input Taint Analysis
+
+- Input sources: 1
+- Compare sinks: 1
+- Taint edges: 1
+- Input→Branch mappings: 1
+
+## Input Sources
+
+- `check_flag:0x401000` call=`scanf` type=`stdio` → `RAX`
+
+## Input → Branch Mappings
+
+- `check_flag:0x401000` → `0x401010` reg=`EBX` conf=`high`
+  - source: `scanf` → sink: `CMP EBX, 0x41` left=`EBX` right=`0x41`
+```
+
+> **提示**：`Input → Branch Mappings` 是最有价值的输出——它告诉 AI 哪些输入字节影响了哪个分支决策。`confidence=high` 表示传播路径短（≤3步），结果可靠；`confidence=low` 表示路径长（≥7步），可能存在误报。
+
+### 反馈式输入探索（Feedback Auto-Explore）
+
+`feedback-explore` 命令根据 `trace-compare` 的失败比较结果，自动生成输入修改方案。支持多轮迭代探索策略。
+
+```powershell
+# 基本用法（自动运行 trace-compare 并生成修改方案）
+python -m beaconflow.cli feedback-explore --metadata metadata.json --format markdown
+
+# 提供当前输入文件（用于生成修改后的输入）
+python -m beaconflow.cli feedback-explore --metadata metadata.json --input-file input.bin --format json
+
+# 聚焦某个函数
+python -m beaconflow.cli feedback-explore --metadata metadata.json --focus-function check_flag --format markdown
+```
+
+输出示例：
+
+```markdown
+# BeaconFlow Feedback Auto-Explore
+
+- Status: plan_generated
+- Total failed compares: 2
+- Total patches: 2
+- High confidence: 1
+- Medium confidence: 1
+- Total rounds: 2
+
+## Round 1: immediate_fix
+
+**Strategy**: Fix immediate value compares (cmp_imm) where the expected value is known.
+
+| Offset | Suggested Value | Size | Compare | Confidence | Reason |
+|--------|----------------|------|---------|------------|--------|
+| 0 | `0x41` | 1 | `0x401000`: `CMP EAX, 0x41` | `high` | cmp_imm: make EAX == 0x41 |
+
+## Round 2: string_compare
+
+**Strategy**: Fix string/memory compares. Need to determine expected buffer content.
+```
+
+> **提示**：Round 1（immediate_fix）是最可操作的——直接将输入字节设置为期望的立即数值。Round 2 和 Round 3 需要更多分析。应用补丁后，重新运行程序并使用 `trace-compare` 检查更多比较是否通过。
+
+### 伪代码摘要导出（Decompile Function）
+
+`decompile-function` 命令从 metadata 的 block context 中生成函数级别的伪代码摘要，让 AI 不需要完整反编译也能理解函数逻辑。
+
+```powershell
+# 按函数名导出伪代码
+python -m beaconflow.cli decompile-function --metadata metadata.json --name check_flag --format markdown
+
+# 按地址导出伪代码
+python -m beaconflow.cli decompile-function --metadata metadata.json --address 0x401000 --format markdown
+```
+
+输出示例：
+
+```markdown
+# Function: check_flag
+
+- Address: `0x401000`
+- Size: 48 bytes
+- Blocks: 3
+- Signature: `int check_flag(arg0)`
+
+## Pseudo Code
+
+```c
+int check_flag(arg0) {
+  // entry block
+  EBP = ESP;
+  call scanf;
+  compare(EAX, 0x41);
+  if (not_equal) goto 0x401020;
+
+  // bb_10:
+  call printf;
+  EAX = 0;
+  return;
+
+  // bb_20:
+  call printf;
+  EAX = 1;
+  return;
+}
+```
+```
+
+> **提示**：伪代码摘要基于 block context 中的指令信息生成，不需要 IDA/Ghidra 完整反编译。对于理解函数逻辑、识别关键比较和调用关系非常有用。结合 `trace-values` 和 `trace-compare` 可以获得更完整的分析。
+
+### 统一中间表示（Normalized IR）
+
+`normalize-ir` 命令将不同架构的指令统一为一种 IR（中间表示），使后续分析不依赖具体架构。支持 x86/x64、ARM/AArch64、MIPS、LoongArch、RISC-V。
+
+```powershell
+# 按函数名转换
+python -m beaconflow.cli normalize-ir --metadata metadata.json --name check_flag --format markdown
+
+# 按地址转换
+python -m beaconflow.cli normalize-ir --metadata metadata.json --address 0x401000 --format json
+```
+
+输出示例：
+
+```markdown
+# Normalized IR: check_flag
+
+- Address: `0x401000`
+- Blocks: 2
+- Operations: {'ASSIGN': 2, 'CALL': 2, 'COMPARE': 1, 'BRANCH': 1, 'RETURN': 1}
+
+## bb_0 (`0x401000`)
+
+```
+  ASSIGN       EBP ESP              // MOV EBP, ESP
+  CALL         scanf                // CALL scanf
+  COMPARE      EAX 0x41             // CMP EAX, 0x41
+  BRANCH       not_equal 0x401020   // JNE 0x401020
+```
+```
+
+> **提示**：IR 将不同架构的指令统一为 ASSIGN/LOAD/STORE/COMPARE/BRANCH/CALL/RETURN/BINARY 等操作，使 AI 可以用统一的方式分析不同架构的程序。`XOR reg, reg` 会被自动优化为 `ASSIGN reg, 0`。
+
+### 特征签名匹配（Signature Match）
+
+`sig-match` 命令在 metadata 中匹配 crypto/VM/packer/anti-debug 特征签名，让 AI 能自动识别程序中使用的加密算法、虚拟机保护、加壳和反调试技术。
+
+```powershell
+# 基本用法
+python -m beaconflow.cli sig-match --metadata metadata.json --format markdown
+
+# 使用自定义特征库
+python -m beaconflow.cli sig-match --metadata metadata.json --sig-library my_sigs.yaml --format json
+
+# 输出到文件
+python -m beaconflow.cli sig-match --metadata metadata.json --format markdown --output sig_report.md
+```
+
+输出示例：
+
+```markdown
+# BeaconFlow Signature Match
+
+- Total matches: 5
+- By category: {'crypto': 3, 'vm': 1, 'anti_debug': 1}
+
+## CRYPTO
+
+- `aes_encrypt:0x401000` `aes` confidence=`high`
+  - name_match:aes_encrypt
+  - const:0x63
+  - insn:SHL ECX, 4
+
+## VM
+
+- `vm_dispatch:0x403000` `generic_vm` confidence=`medium`
+  - name_match:vm_dispatch
+  - insn:JMP [EAX+ECX*4]
+
+## ANTI_DEBUG
+
+- `check_debug:0x405000` `windows` confidence=`high`
+  - api:IsDebuggerPresent
+  - api:GetTickCount
+```
+
+识别的签名类型：
+
+| 类别 | 签名 | 说明 |
+| --- | --- | --- |
+| crypto | aes, des, rc4, tea, chacha20, sm4, hash, base64, crc | 加密/哈希/编码算法 |
+| vm | generic_vm, vm_stack | 虚拟机解释器特征 |
+| packer | upx, generic_packer, packer_ids | 加壳/解壳特征 |
+| anti_debug | windows, linux, generic | 反调试技术 |
+
+> **提示**：`confidence=high` 表示匹配到 2 个以上证据（名称+常量+指令），可信度高；`confidence=medium` 表示只有 1 个证据，需要进一步确认。自定义特征库使用 YAML 格式，参考内置的 `beaconflow/analysis/sig_library.yaml`。
+
+### 案例工作区（Case Workspace）
+
+Case Workspace 让一个 CTF 题目或分析目标形成稳定工作区，方便 AI Agent 多轮分析而不需要每次重新猜路径、目标文件、trace 文件、metadata 文件位置。
+
+```powershell
+# 初始化工作区
+python -m beaconflow.cli init-case --target ./flagchecker --arch loongarch64 --backend qemu
+
+# 添加 metadata 文件
+python -m beaconflow.cli add-metadata --name ghidra --path metadata.json --description "Ghidra metadata"
+
+# 添加运行记录
+python -m beaconflow.cli add-run --name case001 --stdin-preview "AAAA" --verdict failure --returncode 1
+
+# 添加分析报告
+python -m beaconflow.cli add-report --name flow_report --path flow.md --type flow --description "执行流分析"
+
+# 添加笔记（AI Agent 记录分析发现）
+python -m beaconflow.cli add-note --title "Round 1" --content "Found AES at 0x401000, TEA at 0x402000"
+
+# 查看工作区状态
+python -m beaconflow.cli summarize-case --format markdown
+
+# 列出运行记录/报告/笔记
+python -m beaconflow.cli list-runs
+python -m beaconflow.cli list-reports
+python -m beaconflow.cli list-notes
+
+# 删除工作区
+python -m beaconflow.cli destroy-case
+```
+
+工作区目录结构：
+
+```text
+.case/
+  manifest.json   # 工作区清单（目标、架构、运行记录、报告、笔记）
+  target          # 目标二进制文件（拷贝或符号链接）
+  metadata/       # 元数据 JSON 文件
+  runs/           # 运行/trace 结果
+  reports/        # 分析报告
+  notes/          # 用户/AI 笔记
+```
+
+manifest.json 示例：
+
+```json
+{
+  "target": "./flagchecker",
+  "arch": "loongarch64",
+  "backend": "qemu",
+  "metadata": {"ghidra": {"path": "metadata/ghidra.json"}},
+  "runs": [{"name": "case001", "verdict": "failure", "stdin_preview": "AAAA"}],
+  "reports": [],
+  "notes": [{"title": "Round 1", "content": "Found AES at 0x401000"}]
+}
+```
+
+> **提示**：AI Agent 可以在多轮分析中持续围绕同一个 case 工作。每轮分析后用 `add-note` 记录发现，用 `add-run` 记录运行结果，用 `summarize-case` 快速回顾进度。
+
 ---
 
 ## 完整案例：ACTF flagchecker（LoongArch）
@@ -1112,6 +1465,23 @@ beaconflow-mcp
 | `inspect_decision_point` | 查看单个决策点的详细信息 |
 | `detect_roles` | 检测函数角色（validator、crypto、dispatcher、input_handler 等） |
 | `inspect_role` | 查看单个函数的角色详情 |
+| `trace_values` | 追踪关键比较点的寄存器/内存/比较值 |
+| `trace_compare` | 提取比较语义（cmp/strcmp/memcmp/switch） |
+| `doctor` | 环境诊断 |
+| `input_taint` | 轻量污点分析：输入字节到分支的追踪 |
+| `feedback_explore` | 反馈式输入探索：自动生成输入修改方案 |
+| `decompile_function` | 伪代码摘要导出 |
+| `normalize_ir` | 统一中间表示（跨架构指令归一化） |
+| `sig_match` | 特征签名匹配（crypto/VM/packer/anti-debug） |
+| `init_case` | 初始化案例工作区 |
+| `summarize_case` | 汇总案例工作区状态 |
+| `add_metadata_to_case` | 向工作区添加 metadata 文件 |
+| `add_run_to_case` | 向工作区添加运行记录 |
+| `add_report_to_case` | 向工作区添加分析报告 |
+| `add_note_to_case` | 向工作区添加笔记 |
+| `list_case_runs` | 列出工作区中的运行记录 |
+| `list_case_reports` | 列出工作区中的报告 |
+| `list_case_notes` | 列出工作区中的笔记 |
 
 ### `collect_drcov`
 

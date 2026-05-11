@@ -161,6 +161,16 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `feedback_explore` | Generate input modification plan based on failed compare results. Uses trace_compare to identify failed comparisons, then suggests byte-level patches. Supports multi-round exploration strategy. |
 | `decompile_function` | Generate pseudo-code summary for a function from metadata. Produces block-level pseudo-code with branch conditions, calls, and loop detection. |
 | `normalize_ir` | Convert function instructions to normalized IR (architecture-independent). Supports x86/x64, ARM/AArch64, MIPS, LoongArch, RISC-V. |
+| `sig_match` | Match crypto/VM/packer/anti-debug signatures in metadata. Identifies AES, DES, RC4, TEA, ChaCha20, SM4, MD5/SHA, Base64, CRC, VM interpreters, UPX, VMProtect, and anti-debug techniques. |
+| `init_case` | Initialize a case workspace for a target binary. Creates .case/ directory with manifest.json, metadata/, runs/, reports/, notes/. |
+| `summarize_case` | Summarize the current case workspace status. Shows target info, metadata count, runs count with verdict summary, reports count, and notes count. |
+| `add_metadata_to_case` | Add a metadata file to the case workspace. |
+| `add_run_to_case` | Add a run/trace result to the case workspace. |
+| `add_report_to_case` | Add an analysis report to the case workspace. |
+| `add_note_to_case` | Add a note to the case workspace. Useful for AI Agent to record analysis findings across rounds. |
+| `list_case_runs` | List all runs in the case workspace. |
+| `list_case_reports` | List all reports in the case workspace. |
+| `list_case_notes` | List all notes in the case workspace. |
 
 ## Key Parameters
 
@@ -203,3 +213,5 @@ When using QEMU `in_asm`, do not use hit counts as a decisive dispatcher signal.
 - Dispatcher identification is still heuristic-based. Default `strict` mode reduces false positives by requiring hot + multi-predecessor + multi-successor shape. Adjust `dispatcher_mode`, `dispatcher_min_hits`, `dispatcher_min_pred`, and `dispatcher_min_succ` only after checking candidate warnings.
 - State variable recovery (knowing *why* the dispatcher chose a specific block) requires richer trace data than BeaconFlow currently provides.
 - Use `trace_values` to extract compare semantics at decision points. The `immediate_compares` output is the most actionable: when the right operand is a constant, you know the expected value. Combined with coverage data, `branch_result` tells you whether the comparison succeeded or failed.
+- Use `sig_match` to quickly identify crypto algorithms, VM protections, packers, and anti-debug techniques in the target binary. High-confidence matches (2+ evidence) are reliable; medium-confidence matches need further confirmation.
+- Use `init_case` to create a persistent workspace for each analysis target. This lets you work across multiple rounds without re-specifying paths. Use `add_note` to record findings, `add_run` to track test inputs, and `summarize_case` to review progress.

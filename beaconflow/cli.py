@@ -16,6 +16,7 @@ from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.models import hex_addr
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
+from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws_add_note, add_report as ws_add_report, add_run as ws_add_run, case_to_markdown, destroy_case, init_case, list_notes, list_reports, list_runs, load_manifest, summarize_case
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -149,6 +150,112 @@ def _cmd_sig_match(args: argparse.Namespace) -> int:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
         print(text)
+    return 0
+
+
+def _cmd_init_case(args: argparse.Namespace) -> int:
+    result = init_case(
+        target=args.target,
+        arch=args.arch,
+        backend=args.backend,
+        root=args.root,
+        overwrite=args.overwrite,
+    )
+    if args.format == "markdown":
+        if result.get("status") == "already_exists":
+            text = f"# Case Already Exists\n\nWorkspace at `{result.get('case_dir', '')}`.\nUse `--overwrite` to reinitialize.\n"
+        elif result.get("status") == "error":
+            text = f"# Error\n\n{result.get('message', '')}\n"
+        else:
+            summary = summarize_case(root=args.root)
+            text = case_to_markdown(summary)
+    else:
+        text = json.dumps(result, indent=2, ensure_ascii=False)
+    print(text)
+    return 0
+
+
+def _cmd_summarize_case(args: argparse.Namespace) -> int:
+    summary = summarize_case(root=args.root)
+    if args.format == "markdown":
+        text = case_to_markdown(summary)
+    else:
+        text = json.dumps(summary, indent=2, ensure_ascii=False)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_add_metadata(args: argparse.Namespace) -> int:
+    result = ws_add_metadata(
+        name=args.name,
+        path=args.path,
+        description=args.description or "",
+        root=args.root,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_add_run(args: argparse.Namespace) -> int:
+    result = ws_add_run(
+        name=args.name,
+        path=args.path,
+        stdin_preview=args.stdin_preview,
+        verdict=args.verdict,
+        returncode=args.returncode,
+        notes=args.notes or "",
+        root=args.root,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_add_report(args: argparse.Namespace) -> int:
+    result = ws_add_report(
+        name=args.name,
+        path=args.path,
+        report_type=args.type or "",
+        description=args.description or "",
+        root=args.root,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_add_note(args: argparse.Namespace) -> int:
+    result = ws_add_note(
+        content=args.content,
+        title=args.title or "",
+        root=args.root,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_list_runs(args: argparse.Namespace) -> int:
+    result = list_runs(root=args.root)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_list_reports(args: argparse.Namespace) -> int:
+    result = list_reports(root=args.root)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_list_notes(args: argparse.Namespace) -> int:
+    result = list_notes(root=args.root)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_destroy_case(args: argparse.Namespace) -> int:
+    result = destroy_case(root=args.root)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
 
@@ -1598,6 +1705,69 @@ def build_parser() -> argparse.ArgumentParser:
     export_ghidra.add_argument("--timeout", type=int, default=600, help="Ghidra headless timeout in seconds.")
     export_ghidra.add_argument("--no-context", action="store_true", help="Skip block context extraction (instructions, calls, strings, etc.) for faster export.")
     export_ghidra.set_defaults(func=_cmd_export_ghidra)
+
+    # ---- Case Workspace 命令 ----
+    init_case_cmd = sub.add_parser("init-case", help="Initialize a case workspace for a target binary.")
+    init_case_cmd.add_argument("--target", required=True, help="Target binary file path.")
+    init_case_cmd.add_argument("--arch", default="x64", help="Target architecture (e.g. x64, loongarch64, mips, arm).")
+    init_case_cmd.add_argument("--backend", choices=("qemu", "dynamorio"), default="qemu", help="Execution backend.")
+    init_case_cmd.add_argument("--root", help="Workspace root directory (default: current directory).")
+    init_case_cmd.add_argument("--overwrite", action="store_true", help="Overwrite existing workspace.")
+    init_case_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    init_case_cmd.set_defaults(func=_cmd_init_case)
+
+    summarize_case_cmd = sub.add_parser("summarize-case", help="Summarize the current case workspace status.")
+    summarize_case_cmd.add_argument("--root", help="Workspace root directory.")
+    summarize_case_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    summarize_case_cmd.add_argument("--output", help="Output file path.")
+    summarize_case_cmd.set_defaults(func=_cmd_summarize_case)
+
+    add_metadata_cmd = sub.add_parser("add-metadata", help="Add a metadata file to the case workspace.")
+    add_metadata_cmd.add_argument("--name", required=True, help="Metadata name (e.g. 'ghidra', 'ida').")
+    add_metadata_cmd.add_argument("--path", required=True, help="Path to metadata JSON file.")
+    add_metadata_cmd.add_argument("--description", help="Description of this metadata.")
+    add_metadata_cmd.add_argument("--root", help="Workspace root directory.")
+    add_metadata_cmd.set_defaults(func=_cmd_add_metadata)
+
+    add_run_cmd = sub.add_parser("add-run", help="Add a run/trace result to the case workspace.")
+    add_run_cmd.add_argument("--name", required=True, help="Run name (e.g. 'case001').")
+    add_run_cmd.add_argument("--path", help="Path to run output file (drcov/trace log).")
+    add_run_cmd.add_argument("--stdin-preview", help="Preview of stdin input used.")
+    add_run_cmd.add_argument("--verdict", help="Run verdict (success, failure, nonzero-exit, unknown).")
+    add_run_cmd.add_argument("--returncode", type=int, help="Process return code.")
+    add_run_cmd.add_argument("--notes", help="Additional notes about this run.")
+    add_run_cmd.add_argument("--root", help="Workspace root directory.")
+    add_run_cmd.set_defaults(func=_cmd_add_run)
+
+    add_report_cmd = sub.add_parser("add-report", help="Add an analysis report to the case workspace.")
+    add_report_cmd.add_argument("--name", required=True, help="Report name.")
+    add_report_cmd.add_argument("--path", required=True, help="Path to report file.")
+    add_report_cmd.add_argument("--type", help="Report type (e.g. 'flow', 'coverage', 'sig-match').")
+    add_report_cmd.add_argument("--description", help="Description of this report.")
+    add_report_cmd.add_argument("--root", help="Workspace root directory.")
+    add_report_cmd.set_defaults(func=_cmd_add_report)
+
+    add_note_cmd = sub.add_parser("add-note", help="Add a note to the case workspace.")
+    add_note_cmd.add_argument("--content", required=True, help="Note content.")
+    add_note_cmd.add_argument("--title", help="Note title.")
+    add_note_cmd.add_argument("--root", help="Workspace root directory.")
+    add_note_cmd.set_defaults(func=_cmd_add_note)
+
+    list_runs_cmd = sub.add_parser("list-runs", help="List all runs in the case workspace.")
+    list_runs_cmd.add_argument("--root", help="Workspace root directory.")
+    list_runs_cmd.set_defaults(func=_cmd_list_runs)
+
+    list_reports_cmd = sub.add_parser("list-reports", help="List all reports in the case workspace.")
+    list_reports_cmd.add_argument("--root", help="Workspace root directory.")
+    list_reports_cmd.set_defaults(func=_cmd_list_reports)
+
+    list_notes_cmd = sub.add_parser("list-notes", help="List all notes in the case workspace.")
+    list_notes_cmd.add_argument("--root", help="Workspace root directory.")
+    list_notes_cmd.set_defaults(func=_cmd_list_notes)
+
+    destroy_case_cmd = sub.add_parser("destroy-case", help="Delete the entire case workspace.")
+    destroy_case_cmd.add_argument("--root", help="Workspace root directory.")
+    destroy_case_cmd.set_defaults(func=_cmd_destroy_case)
 
     return parser
 

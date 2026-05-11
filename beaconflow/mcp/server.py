@@ -15,6 +15,7 @@ from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
+from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws_add_note, add_report as ws_add_report, add_run as ws_add_run, case_to_markdown, destroy_case, init_case, list_notes, list_reports, list_runs, load_manifest, summarize_case
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -474,6 +475,113 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
             },
             "required": ["metadata_path"],
+        },
+    },
+    "init_case": {
+        "description": "Initialize a case workspace for a target binary. Creates .case/ directory with manifest.json, metadata/, runs/, reports/, notes/ subdirectories. AI Agent can work on the same case across multiple analysis rounds.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_path": {"type": "string", "description": "Target binary file path."},
+                "arch": {"type": "string", "default": "x64", "description": "Target architecture (e.g. x64, loongarch64, mips, arm)."},
+                "backend": {"type": "string", "enum": ["qemu", "dynamorio"], "default": "qemu", "description": "Execution backend."},
+                "root": {"type": "string", "description": "Workspace root directory (default: current directory)."},
+                "overwrite": {"type": "boolean", "default": False, "description": "Overwrite existing workspace."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+            "required": ["target_path"],
+        },
+    },
+    "summarize_case": {
+        "description": "Summarize the current case workspace status. Shows target info, metadata count, runs count with verdict summary, reports count, and notes count. Helps AI Agent quickly understand current analysis progress.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {"type": "string", "description": "Workspace root directory."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+        },
+    },
+    "add_metadata_to_case": {
+        "description": "Add a metadata file to the case workspace. Copies the metadata JSON into .case/metadata/ and records it in manifest.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Metadata name (e.g. 'ghidra', 'ida')."},
+                "path": {"type": "string", "description": "Path to metadata JSON file."},
+                "description": {"type": "string", "description": "Description of this metadata."},
+                "root": {"type": "string", "description": "Workspace root directory."},
+            },
+            "required": ["name", "path"],
+        },
+    },
+    "add_run_to_case": {
+        "description": "Add a run/trace result to the case workspace. Records stdin, verdict, return code, and copies the trace file into .case/runs/.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Run name (e.g. 'case001')."},
+                "path": {"type": "string", "description": "Path to run output file (drcov/trace log)."},
+                "stdin_preview": {"type": "string", "description": "Preview of stdin input used."},
+                "verdict": {"type": "string", "description": "Run verdict (success, failure, nonzero-exit, unknown)."},
+                "returncode": {"type": "integer", "description": "Process return code."},
+                "notes": {"type": "string", "description": "Additional notes about this run."},
+                "root": {"type": "string", "description": "Workspace root directory."},
+            },
+            "required": ["name"],
+        },
+    },
+    "add_report_to_case": {
+        "description": "Add an analysis report to the case workspace. Copies the report file into .case/reports/ and records it in manifest.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Report name."},
+                "path": {"type": "string", "description": "Path to report file."},
+                "report_type": {"type": "string", "description": "Report type (e.g. 'flow', 'coverage', 'sig-match')."},
+                "description": {"type": "string", "description": "Description of this report."},
+                "root": {"type": "string", "description": "Workspace root directory."},
+            },
+            "required": ["name", "path"],
+        },
+    },
+    "add_note_to_case": {
+        "description": "Add a note to the case workspace. Useful for AI Agent to record analysis findings, hypotheses, or next steps across multiple rounds.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "Note content."},
+                "title": {"type": "string", "description": "Note title."},
+                "root": {"type": "string", "description": "Workspace root directory."},
+            },
+            "required": ["content"],
+        },
+    },
+    "list_case_runs": {
+        "description": "List all runs in the case workspace.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {"type": "string", "description": "Workspace root directory."},
+            },
+        },
+    },
+    "list_case_reports": {
+        "description": "List all reports in the case workspace.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {"type": "string", "description": "Workspace root directory."},
+            },
+        },
+    },
+    "list_case_notes": {
+        "description": "List all notes in the case workspace.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {"type": "string", "description": "Workspace root directory."},
+            },
         },
     },
 }
@@ -1138,6 +1246,87 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if arguments.get("format") == "markdown":
             return _tool_result(ir_to_markdown(result))
         return _tool_result(result)
+
+    if name == "sig_match":
+        metadata = load_metadata(arguments["metadata_path"])
+        result = match_signatures(
+            metadata,
+            sig_library_path=arguments.get("sig_library_path"),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(sig_match_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "init_case":
+        result = init_case(
+            target=arguments["target_path"],
+            arch=arguments.get("arch", "x64"),
+            backend=arguments.get("backend", "qemu"),
+            root=arguments.get("root"),
+            overwrite=arguments.get("overwrite", False),
+        )
+        if arguments.get("format") == "markdown":
+            if result.get("status") == "already_exists":
+                return _tool_result(f"# Case Already Exists\n\nWorkspace at `{result.get('case_dir', '')}`.\nUse `overwrite` to reinitialize.\n")
+            if result.get("status") == "error":
+                return _tool_result(f"# Error\n\n{result.get('message', '')}\n")
+            summary = summarize_case(root=arguments.get("root"))
+            return _tool_result(case_to_markdown(summary))
+        return _tool_result(result)
+
+    if name == "summarize_case":
+        summary = summarize_case(root=arguments.get("root"))
+        if arguments.get("format") == "markdown":
+            return _tool_result(case_to_markdown(summary))
+        return _tool_result(summary)
+
+    if name == "add_metadata_to_case":
+        result = ws_add_metadata(
+            name=arguments["name"],
+            path=arguments["path"],
+            description=arguments.get("description", ""),
+            root=arguments.get("root"),
+        )
+        return _tool_result(result)
+
+    if name == "add_run_to_case":
+        result = ws_add_run(
+            name=arguments["name"],
+            path=arguments.get("path"),
+            stdin_preview=arguments.get("stdin_preview"),
+            verdict=arguments.get("verdict"),
+            returncode=arguments.get("returncode"),
+            notes=arguments.get("notes", ""),
+            root=arguments.get("root"),
+        )
+        return _tool_result(result)
+
+    if name == "add_report_to_case":
+        result = ws_add_report(
+            name=arguments["name"],
+            path=arguments["path"],
+            report_type=arguments.get("report_type", ""),
+            description=arguments.get("description", ""),
+            root=arguments.get("root"),
+        )
+        return _tool_result(result)
+
+    if name == "add_note_to_case":
+        result = ws_add_note(
+            content=arguments["content"],
+            title=arguments.get("title", ""),
+            root=arguments.get("root"),
+        )
+        return _tool_result(result)
+
+    if name == "list_case_runs":
+        return _tool_result(list_runs(root=arguments.get("root")))
+
+    if name == "list_case_reports":
+        return _tool_result(list_reports(root=arguments.get("root")))
+
+    if name == "list_case_notes":
+        return _tool_result(list_notes(root=arguments.get("root")))
 
     raise ValueError(f"unknown tool: {name}")
 
