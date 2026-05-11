@@ -19,6 +19,8 @@ from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws
 from beaconflow.wasm_parser import wasm_to_metadata
 from beaconflow.runtime.trace_calls import trace_calls, trace_calls_to_markdown
 from beaconflow.runtime.trace_compare import trace_compare, trace_compare_to_markdown
+from beaconflow.analysis.auto_explore import auto_explore_loop, auto_explore_to_markdown
+from beaconflow.analysis.input_impact import input_impact, input_impact_to_markdown
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -634,6 +636,43 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
             },
             "required": ["target"],
+        },
+    },
+    "auto_explore_loop": {
+        "description": "Multi-round feedback-driven input exploration. Keeps better inputs and continues mutating across rounds. Not a full fuzzer - focuses on AI-readable, explainable results.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Target binary."},
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON."},
+                "seed": {"type": "string", "description": "Initial seed input."},
+                "mutate_template": {"type": "string", "description": "Mutation template (e.g. 'ISCC{%32x}')."},
+                "rounds": {"type": "integer", "default": 20, "description": "Number of exploration rounds."},
+                "batch_size": {"type": "integer", "default": 64, "description": "Mutations per round."},
+                "keep_top": {"type": "integer", "default": 8, "description": "Top candidates to keep per round."},
+                "success_regex": {"type": "string", "description": "Regex matching success output."},
+                "failure_regex": {"type": "string", "description": "Regex matching failure output."},
+                "positions": {"type": "string", "description": "Mutation position range (e.g. '5:37')."},
+                "alphabet": {"type": "string", "description": "Mutation character set."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+            "required": ["target", "metadata_path"],
+        },
+    },
+    "input_impact": {
+        "description": "Black-box differential input impact analysis. Perturbs each input position and observes output changes. Infers which input bytes affect which branches. Not a full taint analysis.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Target binary."},
+                "seed": {"type": "string", "description": "Seed input string."},
+                "positions": {"type": "string", "description": "Position range to test (e.g. '5:37')."},
+                "alphabet": {"type": "string", "description": "Characters to try (default: 0-9a-f)."},
+                "max_mutations": {"type": "integer", "default": 8, "description": "Max mutations per position."},
+                "timeout": {"type": "integer", "default": 10, "description": "Timeout per run (seconds)."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+            "required": ["target", "seed"],
         },
     },
 }
@@ -1428,6 +1467,38 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         )
         if arguments.get("format") == "markdown":
             return _tool_result(trace_compare_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "auto_explore_loop":
+        metadata = load_metadata(arguments["metadata_path"])
+        result = auto_explore_loop(
+            target=arguments["target"],
+            metadata=metadata,
+            seed=arguments.get("seed", ""),
+            mutate_template=arguments.get("mutate_template", ""),
+            rounds=arguments.get("rounds", 20),
+            batch_size=arguments.get("batch_size", 64),
+            keep_top=arguments.get("keep_top", 8),
+            success_regex=arguments.get("success_regex", ""),
+            failure_regex=arguments.get("failure_regex", ""),
+            positions=arguments.get("positions", ""),
+            alphabet=arguments.get("alphabet", ""),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(auto_explore_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "input_impact":
+        result = input_impact(
+            target=arguments["target"],
+            seed=arguments["seed"],
+            positions=arguments.get("positions", ""),
+            alphabet=arguments.get("alphabet", "0123456789abcdef"),
+            max_mutations_per_pos=arguments.get("max_mutations", 8),
+            timeout=arguments.get("timeout", 10),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(input_impact_to_markdown(result))
         return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")

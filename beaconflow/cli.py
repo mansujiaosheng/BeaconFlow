@@ -20,6 +20,8 @@ from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws
 from beaconflow.wasm_parser import wasm_to_metadata
 from beaconflow.runtime.trace_calls import trace_calls, trace_calls_to_markdown
 from beaconflow.runtime.trace_compare import trace_compare as trace_compare_rt, trace_compare_to_markdown as trace_compare_rt_to_markdown
+from beaconflow.analysis.auto_explore import auto_explore_loop, auto_explore_to_markdown
+from beaconflow.analysis.input_impact import input_impact, input_impact_to_markdown
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -222,6 +224,54 @@ def _cmd_trace_compare_rt(args: argparse.Namespace) -> int:
     )
     if args.format == "markdown":
         text = trace_compare_rt_to_markdown(result)
+    else:
+        text = json.dumps(result, indent=2, ensure_ascii=False)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_auto_explore_loop(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    result = auto_explore_loop(
+        target=args.target,
+        metadata=metadata,
+        seed=args.seed or "",
+        mutate_template=args.mutate_template or "",
+        rounds=args.rounds,
+        batch_size=args.batch_size,
+        keep_top=args.keep_top,
+        success_regex=args.success_regex or "",
+        failure_regex=args.failure_regex or "",
+        positions=args.positions or "",
+        alphabet=args.alphabet or "",
+        case_dir=args.case_dir,
+    )
+    if args.format == "markdown":
+        text = auto_explore_to_markdown(result)
+    else:
+        text = json.dumps(result, indent=2, ensure_ascii=False)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_input_impact(args: argparse.Namespace) -> int:
+    result = input_impact(
+        target=args.target,
+        seed=args.seed,
+        positions=args.positions or "",
+        alphabet=args.alphabet or "0123456789abcdef",
+        max_mutations_per_pos=args.max_mutations,
+        timeout=args.timeout,
+        run_cwd=args.run_cwd,
+    )
+    if args.format == "markdown":
+        text = input_impact_to_markdown(result)
     else:
         text = json.dumps(result, indent=2, ensure_ascii=False)
     if args.output:
@@ -1821,6 +1871,37 @@ def build_parser() -> argparse.ArgumentParser:
     trace_compare_cmd.add_argument("--output", help="Output file path.")
     trace_compare_cmd.add_argument("program_args", nargs="*", help="Arguments to pass to the target.")
     trace_compare_cmd.set_defaults(func=_cmd_trace_compare_rt)
+
+    # ---- Auto Explore Loop 命令 ----
+    auto_explore_cmd = sub.add_parser("auto-explore-loop", help="Multi-round feedback-driven input exploration. Keeps better inputs and continues mutating.")
+    auto_explore_cmd.add_argument("--target", required=True, help="Target binary.")
+    auto_explore_cmd.add_argument("--metadata", required=True, help="Path to metadata JSON.")
+    auto_explore_cmd.add_argument("--seed", help="Initial seed input.")
+    auto_explore_cmd.add_argument("--mutate-template", help="Mutation template (e.g. 'ISCC{%%32x}').")
+    auto_explore_cmd.add_argument("--rounds", type=int, default=20, help="Number of exploration rounds.")
+    auto_explore_cmd.add_argument("--batch-size", type=int, default=64, help="Mutations per round.")
+    auto_explore_cmd.add_argument("--keep-top", type=int, default=8, help="Top candidates to keep per round.")
+    auto_explore_cmd.add_argument("--success-regex", help="Regex matching success output.")
+    auto_explore_cmd.add_argument("--failure-regex", help="Regex matching failure output.")
+    auto_explore_cmd.add_argument("--positions", help="Mutation position range (e.g. '5:37').")
+    auto_explore_cmd.add_argument("--alphabet", help="Mutation character set.")
+    auto_explore_cmd.add_argument("--case-dir", help="Case workspace directory for saving candidates.")
+    auto_explore_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    auto_explore_cmd.add_argument("--output", help="Output file path.")
+    auto_explore_cmd.set_defaults(func=_cmd_auto_explore_loop)
+
+    # ---- Input Impact 命令 ----
+    input_impact_cmd = sub.add_parser("input-impact", help="Black-box differential input impact analysis. Perturbs each input position and observes output changes.")
+    input_impact_cmd.add_argument("--target", required=True, help="Target binary.")
+    input_impact_cmd.add_argument("--seed", required=True, help="Seed input string.")
+    input_impact_cmd.add_argument("--positions", help="Position range to test (e.g. '5:37').")
+    input_impact_cmd.add_argument("--alphabet", help="Characters to try (default: 0-9a-f).")
+    input_impact_cmd.add_argument("--max-mutations", type=int, default=8, help="Max mutations per position.")
+    input_impact_cmd.add_argument("--timeout", type=int, default=10, help="Timeout per run (seconds).")
+    input_impact_cmd.add_argument("--run-cwd", help="Working directory for target.")
+    input_impact_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    input_impact_cmd.add_argument("--output", help="Output file path.")
+    input_impact_cmd.set_defaults(func=_cmd_input_impact)
 
     # ---- Case Workspace 命令 ----
     init_case_cmd = sub.add_parser("init-case", help="Initialize a case workspace for a target binary.")
