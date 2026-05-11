@@ -23,6 +23,7 @@ from beaconflow.analysis.auto_explore import auto_explore_loop, auto_explore_to_
 from beaconflow.analysis.input_impact import input_impact, input_impact_to_markdown
 from beaconflow.analysis.decision_points import find_decision_points
 from beaconflow.analysis.role_detector import analyze_roles
+from beaconflow.update_checker import check_and_notify_async, check_for_update, update_check_to_markdown
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -676,6 +677,16 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
             },
             "required": ["target", "seed"],
+        },
+    },
+    "check_update": {
+        "description": "Check if a newer version of BeaconFlow is available on GitHub. Non-mandatory - just shows update info and the command to update. Results are cached for 1 hour.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "force": {"type": "boolean", "default": False, "description": "Force check, ignoring cache."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
         },
     },
 }
@@ -1505,6 +1516,12 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             return _tool_result(input_impact_to_markdown(result))
         return _tool_result(result)
 
+    if name == "check_update":
+        result = check_for_update(force=arguments.get("force", False))
+        if arguments.get("format") == "markdown":
+            return _tool_result(update_check_to_markdown(result))
+        return _tool_result(result)
+
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -1706,6 +1723,7 @@ async def _stdio_loop() -> None:
 
 
 def main() -> int:
+    check_and_notify_async()
     asyncio.run(_stdio_loop())
     return 0
 

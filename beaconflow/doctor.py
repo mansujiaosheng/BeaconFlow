@@ -72,6 +72,28 @@ def _check_beaconflow_import() -> CheckResult:
         return CheckResult("beaconflow", "FAIL", f"Cannot import beaconflow: {e}")
 
 
+def _check_update() -> CheckResult:
+    """检查 BeaconFlow 是否有新版本可用。"""
+    try:
+        from beaconflow.update_checker import check_for_update
+        result = check_for_update()
+        current = result.get("current", "unknown")
+        latest = result.get("latest", "unknown")
+        has_update = result.get("has_update", False)
+
+        if has_update:
+            return CheckResult(
+                "update", "WARN",
+                f"New version available: {current} → {latest}",
+                detail="Run `check_update` tool or see update command in output",
+            )
+        if result.get("message") and "无法检查" in result["message"]:
+            return CheckResult("update", "WARN", result["message"])
+        return CheckResult("update", "OK", f"beaconflow {current} is up to date")
+    except Exception as e:
+        return CheckResult("update", "WARN", f"Update check failed: {e}")
+
+
 def _check_drrun() -> list[CheckResult]:
     results = []
     repo_root = Path(__file__).resolve().parent.parent
@@ -225,6 +247,7 @@ def run_doctor(
 
     results.append(_check_python())
     results.append(_check_beaconflow_import())
+    results.append(_check_update())
     results.append(_check_ida())
     results.extend(_check_ghidra())
     results.extend(_check_drrun())
