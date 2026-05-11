@@ -46,6 +46,7 @@ def _build_frida_script(
     addresses: list[str],
     focus_function: str | None = None,
     max_events: int = 1000,
+    image_base: str = "0x0",
 ) -> str:
     """构建 Frida 脚本来 hook 比较指令地址。"""
     addr_list = json.dumps(addresses)
@@ -55,13 +56,14 @@ def _build_frida_script(
 
 var addresses = """ + addr_list + r""";
 var maxEvents = """ + str(max_events) + r""";
+var imageBase = ptr(""" + json.dumps(image_base) + r""");
 var events = [];
 var eventCount = 0;
 
 function addEvent(evt) {
     if (eventCount >= maxEvents) return;
-    events.push(evt);
     eventCount++;
+    send(JSON.stringify({type: "event", data: evt}));
 }
 
 // 解析 x86/x64 操作数
@@ -140,12 +142,13 @@ function parseOperand(text, ctx) {
     return result;
 }
 
-// 在指定地址插桩
+// 在指定地址插桩（RVA + 运行时 image base）
 for (var i = 0; i < addresses.length; i++) {
     (function(addrStr) {
         try {
-            var addr = ptr(addrStr);
-            Interceptor.attach(addr, {
+            var rva = ptr(addrStr);
+            var hookAddr = imageBase.add(rva);
+            Interceptor.attach(hookAddr, {
                 onEnter: function(args) {
                     try {
                         var ctx = this.context;
@@ -174,11 +177,6 @@ for (var i = 0; i < addresses.length; i++) {
         } catch(e) {}
     })(addresses[i]);
 }
-
-// 发送结果
-setTimeout(function() {
-    send(JSON.stringify({events: events}));
-}, 500);
 """
 
 
@@ -224,6 +222,7 @@ def trace_compare(
 
     # 收集决策点地址
     hook_addresses: list[str] = []
+    image_base = "0x0"
 
     if addresses:
         hook_addresses = addresses
@@ -235,6 +234,11 @@ def trace_compare(
                 return {"status": "error", "message": f"无法读取 metadata: {e}"}
 
         if metadata:
+            # 从 metadata 提取 image base
+            image_base = metadata.get("image_base", "0x0")
+            if isinstance(image_base, int):
+                image_base = hex(image_base)
+
             points = _parse_metadata_decision_points(metadata)
             for p in points:
                 if focus_function and p["function"] != focus_function:
@@ -260,9 +264,15 @@ def trace_compare(
             "message": "没有找到决策点。请提供 --metadata 或 --address 参数。",
         }
 
-    frida_script = _build_frida_script(hook_addresses, focus_function, max_events)
+    frida_script = _build_frida_script(
+        hook_addresses,
+        focus_function=focus_function,
+        max_events=max_events,
+        image_base=image_base,
+    )
 
     collected_data: dict[str, Any] = {}
+    result_events: list[dict[str, Any]] = []
     pid = None
 
     try:
@@ -274,12 +284,17 @@ def trace_compare(
         session = frida.attach(pid)
 
         def on_message(message, data):
+            nonlocal result_events
             if message["type"] == "send":
                 try:
                     payload = json.loads(message["payload"])
-                    collected_data.update(payload)
+                    if isinstance(payload, dict) and payload.get("type") == "event":
+                        result_events.append(payload["data"])
                 except (json.JSONDecodeError, TypeError):
                     pass
+            elif message["type"] == "error":
+                import logging
+                logging.warning("Frida 脚本错误: %s", message.get("description", ""))
 
         script = session.create_script(frida_script)
         script.on("message", on_message)
@@ -311,7 +326,7 @@ def trace_compare(
             except (ProcessLookupError, PermissionError):
                 pass
 
-    events = collected_data.get("events", [])
+    events = result_events
 
     return {
         "status": "ok",

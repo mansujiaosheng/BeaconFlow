@@ -603,7 +603,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "trace_calls": {
-        "description": "Trace library function calls (strcmp/memcmp/strncmp/strlen/etc.) at runtime using Frida. Captures actual parameter values, return values, and call sites. Most useful for seeing what values are being compared in CTF challenges.",
+        "description": "Trace library function calls (strcmp/memcmp/strncmp/strlen/etc.) at runtime using Frida. Captures actual parameter values, return values, and call sites. Most useful for seeing what values are being compared in CTF challenges. Default filter_user_only=true filters out CRT/runtime library internal calls to reduce noise.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -615,6 +615,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "hook": {"type": "string", "description": "Comma-separated list of functions to hook."},
                 "max_read": {"type": "integer", "default": 128, "description": "Max bytes to read from pointer args."},
                 "max_events": {"type": "integer", "default": 1000, "description": "Max events to capture."},
+                "filter_user_only": {"type": "boolean", "default": True, "description": "Only keep calls from user code (main module), filtering out CRT/runtime library internal noise."},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
             },
             "required": ["target"],
@@ -1438,6 +1439,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             hook=arguments.get("hook"),
             max_read=arguments.get("max_read", 128),
             max_events=arguments.get("max_events", 1000),
+            filter_user_only=arguments.get("filter_user_only", True),
         )
         if arguments.get("format") == "markdown":
             return _tool_result(trace_calls_to_markdown(result))

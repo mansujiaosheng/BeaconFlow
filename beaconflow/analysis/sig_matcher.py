@@ -96,6 +96,93 @@ def _match_string_signatures(strings: tuple[str, ...], sigs: list[str]) -> list[
     return matched
 
 
+def _match_cross_block_crypto(
+    metadata: ProgramMetadata,
+    crypto_sigs: dict[str, Any],
+) -> list[SignatureMatch]:
+    """跨 block 函数级加密特征聚合。
+
+    对于 XXTEA/BTEA 等算法，delta 常量 (0x9E3779B9) 和
+    移位操作 (SHL 4, SHR 5) 分散在不同 block 中，
+    单 block 匹配可能漏检。此函数将整个函数的所有 block
+    的常量和指令聚合后再匹配。
+    """
+    matches: list[SignatureMatch] = []
+
+    # 需要跨 block 聚合的算法列表（特征分散在多个 block 中）
+    cross_block_sigs = {
+        "tea": crypto_sigs.get("tea", {}),
+        "chacha20": crypto_sigs.get("chacha20", {}),
+        "sm4": crypto_sigs.get("sm4", {}),
+        "aes": crypto_sigs.get("aes", {}),
+        "des": crypto_sigs.get("des", {}),
+    }
+
+    for func in metadata.functions:
+        # 聚合函数内所有 block 的常量和指令
+        all_constants: list[int] = []
+        all_instructions: list[str] = []
+        block_addrs: list[int] = []
+
+        for block in func.blocks:
+            all_constants.extend(block.context.constants)
+            all_instructions.extend(block.context.instructions)
+            block_addrs.append(block.start)
+
+        if not all_constants and not all_instructions:
+            continue
+
+        for crypto_name, sig in cross_block_sigs.items():
+            if not sig:
+                continue
+
+            evidence: list[str] = []
+
+            # 名称匹配
+            name_patterns = sig.get("name_patterns", [])
+            if name_patterns and _match_name_patterns(func.name, name_patterns):
+                evidence.append(f"name_match:{func.name}")
+
+            # 聚合常量匹配
+            const_sigs = sig.get("constant_signatures", [])
+            if const_sigs:
+                for c in all_constants:
+                    for cs in const_sigs:
+                        if c == cs:
+                            evidence.append(f"const:0x{c:X}")
+
+            # 聚合指令匹配
+            insn_patterns = sig.get("instruction_patterns", [])
+            if insn_patterns:
+                insn_matches = _match_instruction_patterns(
+                    tuple(all_instructions), insn_patterns
+                )
+                evidence.extend(insn_matches)
+
+            # 去重 evidence
+            seen_evidence = set()
+            unique_evidence = []
+            for e in evidence:
+                if e not in seen_evidence:
+                    seen_evidence.add(e)
+                    unique_evidence.append(e)
+            evidence = unique_evidence
+
+            # 跨 block 匹配需要更多证据才判为 high confidence
+            if len(evidence) >= 2:
+                confidence = "high" if len(evidence) >= 3 else "medium"
+                matches.append(SignatureMatch(
+                    category="crypto",
+                    name=f"{crypto_name}_cross_block",
+                    confidence=confidence,
+                    evidence=evidence,
+                    address=func.start,
+                    function=func.name,
+                ))
+
+    return matches
+
+
 def match_signatures(
     metadata: ProgramMetadata,
     sig_library_path: str | None = None,
@@ -210,6 +297,16 @@ def match_signatures(
             for platform, sig in anti_debug_sigs.items():
                 ad_evidence: list[str] = []
 
+                # IAT Hook 特征匹配
+                name_patterns = sig.get("name_patterns", [])
+                if name_patterns and _match_name_patterns(func.name, name_patterns):
+                    ad_evidence.append(f"name_match:{func.name}")
+
+                insn_patterns = sig.get("instruction_patterns", [])
+                if insn_patterns:
+                    insn_matches = _match_instruction_patterns(ctx.instructions, insn_patterns)
+                    ad_evidence.extend(insn_matches)
+
                 api_calls = sig.get("api_calls", [])
                 if api_calls:
                     for call in ctx.calls:
@@ -225,7 +322,7 @@ def match_signatures(
 
                 if ad_evidence:
                     matches.append(SignatureMatch(
-                        category="anti_debug",
+                        category="anti_debug" if platform != "iat_hook" else "iat_hook",
                         name=platform,
                         confidence="high" if len(ad_evidence) >= 2 else "medium",
                         evidence=ad_evidence,
@@ -288,6 +385,15 @@ def match_signatures(
             seen.add(key)
             unique_matches.append(m)
 
+    # 跨 block 函数级加密特征聚合
+    # 对于 XXTEA/BTEA 等算法，delta 常量和移位操作分散在不同 block 中
+    function_level_matches = _match_cross_block_crypto(metadata, crypto_sigs)
+    for flm in function_level_matches:
+        key = (flm.category, flm.name, flm.function or "", flm.address or 0)
+        if key not in seen:
+            seen.add(key)
+            unique_matches.append(flm)
+
     category_counts: dict[str, int] = {}
     for m in unique_matches:
         category_counts[m.category] = category_counts.get(m.category, 0) + 1
@@ -312,7 +418,7 @@ def sig_match_to_markdown(result: dict[str, Any]) -> str:
         "",
     ]
 
-    for category in ("crypto", "vm", "wasm", "packer", "packer_id", "anti_debug"):
+    for category in ("crypto", "iat_hook", "vm", "wasm", "packer", "packer_id", "anti_debug"):
         cat_matches = [m for m in matches if m["category"] == category]
         if not cat_matches:
             continue

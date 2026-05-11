@@ -29,9 +29,23 @@ _FRIDA_SCRIPT_TEMPLATE = r"""
 var hookNames = %HOOK_NAMES%;
 var maxRead = %MAX_READ%;
 var maxEvents = %MAX_EVENTS%;
+var filterUserOnly = %FILTER_USER_ONLY%;
 
 var events = [];
 var eventCount = 0;
+
+// 主模块基址和大小，用于判断 call_site 是否属于用户代码
+var mainModule = Process.enumerateModules()[0];
+var mainBase = mainModule.base;
+var mainEnd = mainModule.base.add(mainModule.size);
+
+function isUserAddress(addr) {
+    try {
+        return addr.compare(mainBase) >= 0 && addr.compare(mainEnd) < 0;
+    } catch(e) {
+        return false;
+    }
+}
 
 // 读取内存为 hex + ascii
 function readMem(ptr, size) {
@@ -122,14 +136,16 @@ function hook_strcmp() {
             this.arg0 = args[0];
             this.arg1 = args[1];
             this.retAddr = this.returnAddress;
+            this.isUserCall = !filterUserOnly || isUserAddress(this.retAddr);
         },
         onLeave: function(retval) {
+            if (!this.isUserCall) return;
             var s0 = readStr(this.arg0, maxRead);
             var s1 = readStr(this.arg1, maxRead);
             var rv = retval.toInt32();
             addEvent({
                 function: "strcmp",
-                call_site: this.retAddr ? "0x" + this.retAddr.sub(Process.enumerateModules()[0].base).toString(16) : "unknown",
+                call_site: this.retAddr ? "0x" + this.retAddr.sub(mainBase).toString(16) : "unknown",
                 return_address: this.retAddr ? "0x" + this.retAddr.toString(16) : "unknown",
                 args: [
                     {name: "s1", pointer: "0x" + this.arg0.toString(16), ascii: s0.ascii, bytes_hex: s0.hex},
@@ -152,15 +168,17 @@ function hook_strncmp() {
             this.arg1 = args[1];
             this.arg2 = args[2].toInt32();
             this.retAddr = this.returnAddress;
+            this.isUserCall = !filterUserOnly || isUserAddress(this.retAddr);
         },
         onLeave: function(retval) {
+            if (!this.isUserCall) return;
             var n = this.arg2;
             var s0 = readMem(this.arg0, Math.min(n, maxRead));
             var s1 = readMem(this.arg1, Math.min(n, maxRead));
             var rv = retval.toInt32();
             addEvent({
                 function: "strncmp",
-                call_site: this.retAddr ? "0x" + this.retAddr.sub(Process.enumerateModules()[0].base).toString(16) : "unknown",
+                call_site: this.retAddr ? "0x" + this.retAddr.sub(mainBase).toString(16) : "unknown",
                 return_address: this.retAddr ? "0x" + this.retAddr.toString(16) : "unknown",
                 args: [
                     {name: "s1", pointer: "0x" + this.arg0.toString(16), ascii: s0.ascii, bytes_hex: s0.hex},
@@ -184,15 +202,17 @@ function hook_memcmp() {
             this.arg1 = args[1];
             this.arg2 = args[2].toInt32();
             this.retAddr = this.returnAddress;
+            this.isUserCall = !filterUserOnly || isUserAddress(this.retAddr);
         },
         onLeave: function(retval) {
+            if (!this.isUserCall) return;
             var n = this.arg2;
             var s0 = readMem(this.arg0, Math.min(n, maxRead));
             var s1 = readMem(this.arg1, Math.min(n, maxRead));
             var rv = retval.toInt32();
             addEvent({
                 function: "memcmp",
-                call_site: this.retAddr ? "0x" + this.retAddr.sub(Process.enumerateModules()[0].base).toString(16) : "unknown",
+                call_site: this.retAddr ? "0x" + this.retAddr.sub(mainBase).toString(16) : "unknown",
                 return_address: this.retAddr ? "0x" + this.retAddr.toString(16) : "unknown",
                 args: [
                     {name: "buf1", pointer: "0x" + this.arg0.toString(16), ascii: s0.ascii, bytes_hex: s0.hex},
@@ -214,13 +234,15 @@ function hook_strlen() {
         onEnter: function(args) {
             this.arg0 = args[0];
             this.retAddr = this.returnAddress;
+            this.isUserCall = !filterUserOnly || isUserAddress(this.retAddr);
         },
         onLeave: function(retval) {
+            if (!this.isUserCall) return;
             var len = retval.toInt32();
             var s = readStr(this.arg0, Math.min(len + 1, maxRead));
             addEvent({
                 function: "strlen",
-                call_site: this.retAddr ? "0x" + this.retAddr.sub(Process.enumerateModules()[0].base).toString(16) : "unknown",
+                call_site: this.retAddr ? "0x" + this.retAddr.sub(mainBase).toString(16) : "unknown",
                 return_address: this.retAddr ? "0x" + this.retAddr.toString(16) : "unknown",
                 args: [
                     {name: "s", pointer: "0x" + this.arg0.toString(16), ascii: s.ascii, bytes_hex: s.hex}
@@ -240,12 +262,14 @@ function hook_printf() {
         onEnter: function(args) {
             this.arg0 = args[0];
             this.retAddr = this.returnAddress;
+            this.isUserCall = !filterUserOnly || isUserAddress(this.retAddr);
         },
         onLeave: function(retval) {
+            if (!this.isUserCall) return;
             var fmt = readStr(this.arg0, maxRead);
             addEvent({
                 function: "printf",
-                call_site: this.retAddr ? "0x" + this.retAddr.sub(Process.enumerateModules()[0].base).toString(16) : "unknown",
+                call_site: this.retAddr ? "0x" + this.retAddr.sub(mainBase).toString(16) : "unknown",
                 return_address: this.retAddr ? "0x" + this.retAddr.toString(16) : "unknown",
                 args: [
                     {name: "fmt", pointer: "0x" + this.arg0.toString(16), ascii: fmt.ascii, bytes_hex: fmt.hex}
@@ -265,12 +289,14 @@ function hook_puts() {
         onEnter: function(args) {
             this.arg0 = args[0];
             this.retAddr = this.returnAddress;
+            this.isUserCall = !filterUserOnly || isUserAddress(this.retAddr);
         },
         onLeave: function(retval) {
+            if (!this.isUserCall) return;
             var s = readStr(this.arg0, maxRead);
             addEvent({
                 function: "puts",
-                call_site: this.retAddr ? "0x" + this.retAddr.sub(Process.enumerateModules()[0].base).toString(16) : "unknown",
+                call_site: this.retAddr ? "0x" + this.retAddr.sub(mainBase).toString(16) : "unknown",
                 return_address: this.retAddr ? "0x" + this.retAddr.toString(16) : "unknown",
                 args: [
                     {name: "s", pointer: "0x" + this.arg0.toString(16), ascii: s.ascii, bytes_hex: s.hex}
@@ -290,12 +316,14 @@ function hook_gets() {
         onEnter: function(args) {
             this.arg0 = args[0];
             this.retAddr = this.returnAddress;
+            this.isUserCall = !filterUserOnly || isUserAddress(this.retAddr);
         },
         onLeave: function(retval) {
+            if (!this.isUserCall) return;
             var s = readStr(this.arg0, maxRead);
             addEvent({
                 function: "gets",
-                call_site: this.retAddr ? "0x" + this.retAddr.sub(Process.enumerateModules()[0].base).toString(16) : "unknown",
+                call_site: this.retAddr ? "0x" + this.retAddr.sub(mainBase).toString(16) : "unknown",
                 return_address: this.retAddr ? "0x" + this.retAddr.toString(16) : "unknown",
                 args: [
                     {name: "buf", pointer: "0x" + this.arg0.toString(16), ascii: s.ascii, bytes_hex: s.hex}
@@ -316,13 +344,15 @@ function hook_fgets() {
             this.arg0 = args[0];
             this.arg1 = args[1].toInt32();
             this.retAddr = this.returnAddress;
+            this.isUserCall = !filterUserOnly || isUserAddress(this.retAddr);
         },
         onLeave: function(retval) {
+            if (!this.isUserCall) return;
             if (!retval.isNull()) {
                 var s = readStr(this.arg0, Math.min(this.arg1, maxRead));
                 addEvent({
                     function: "fgets",
-                    call_site: this.retAddr ? "0x" + this.retAddr.sub(Process.enumerateModules()[0].base).toString(16) : "unknown",
+                    call_site: this.retAddr ? "0x" + this.retAddr.sub(mainBase).toString(16) : "unknown",
                     return_address: this.retAddr ? "0x" + this.retAddr.toString(16) : "unknown",
                     args: [
                         {name: "buf", pointer: "0x" + this.arg0.toString(16), ascii: s.ascii, bytes_hex: s.hex},
@@ -344,12 +374,14 @@ function hook_scanf() {
         onEnter: function(args) {
             this.arg0 = args[0];
             this.retAddr = this.returnAddress;
+            this.isUserCall = !filterUserOnly || isUserAddress(this.retAddr);
         },
         onLeave: function(retval) {
+            if (!this.isUserCall) return;
             var fmt = readStr(this.arg0, maxRead);
             addEvent({
                 function: "scanf",
-                call_site: this.retAddr ? "0x" + this.retAddr.sub(Process.enumerateModules()[0].base).toString(16) : "unknown",
+                call_site: this.retAddr ? "0x" + this.retAddr.sub(mainBase).toString(16) : "unknown",
                 return_address: this.retAddr ? "0x" + this.retAddr.toString(16) : "unknown",
                 args: [
                     {name: "fmt", pointer: "0x" + this.arg0.toString(16), ascii: fmt.ascii, bytes_hex: fmt.hex}
@@ -397,6 +429,7 @@ def trace_calls(
     hook: str | None = None,
     max_read: int = 128,
     max_events: int = 1000,
+    filter_user_only: bool = True,
 ) -> dict[str, Any]:
     """使用 Frida hook 运行时库函数，提取参数和返回值。
 
@@ -410,6 +443,7 @@ def trace_calls(
         hook: 要 hook 的函数列表（逗号分隔）
         max_read: 最大读取字节数
         max_events: 最大事件数
+        filter_user_only: 是否只保留用户代码（主模块）调用的函数，过滤 CRT 噪声
     """
     try:
         import frida
@@ -433,6 +467,7 @@ def trace_calls(
     frida_script = frida_script.replace("%HOOK_NAMES%", json.dumps(hook_names))
     frida_script = frida_script.replace("%MAX_READ%", str(max_read))
     frida_script = frida_script.replace("%MAX_EVENTS%", str(max_events))
+    frida_script = frida_script.replace("%FILTER_USER_ONLY%", "true" if filter_user_only else "false")
 
     result_events: list[dict] = []
     proc = None
@@ -520,7 +555,30 @@ def trace_calls(
 
     events = result_events
     interesting = [e for e in events if e.get("function") in ("strcmp", "strncmp", "memcmp")]
-    summary = {"total_events": len(events), "interesting_events": len(interesting)}
+    not_equal = [e for e in interesting if e.get("verdict_hint") == "not_equal"]
+    equal = [e for e in interesting if e.get("verdict_hint") == "equal"]
+    input_events = [e for e in events if e.get("verdict_hint") == "input"]
+    output_events = [e for e in events if e.get("verdict_hint") == "output"]
+
+    ai_hints = []
+    if not_equal:
+        ai_hints.append(f"发现 {len(not_equal)} 次不相等比较，说明程序对输入进行了校验且当前输入未通过")
+    if equal:
+        ai_hints.append(f"发现 {len(equal)} 次相等比较，可能是部分校验通过或常量比较")
+    if not interesting and events:
+        ai_hints.append("未捕获到 strcmp/memcmp 比较，程序可能使用自定义比较逻辑（如逐字节异或、查表等）")
+    if not events:
+        ai_hints.append("未捕获到任何库函数调用，程序可能是纯计算型或使用了静态链接")
+
+    summary = {
+        "total_events": len(events),
+        "interesting_events": len(interesting),
+        "not_equal_comparisons": len(not_equal),
+        "equal_comparisons": len(equal),
+        "input_events": len(input_events),
+        "output_events": len(output_events),
+        "filter_user_only": filter_user_only,
+    }
 
     return {
         "status": "ok",
@@ -531,6 +589,7 @@ def trace_calls(
             "args": args or [],
         },
         "events": events,
+        "ai_hints": ai_hints,
         "summary": summary,
     }
 
@@ -609,6 +668,19 @@ def trace_calls_to_markdown(result: dict[str, Any]) -> str:
     lines.append("")
     lines.append(f"- Total events: {summary.get('total_events', 0)}")
     lines.append(f"- Interesting (strcmp/memcmp): {summary.get('interesting_events', 0)}")
+    lines.append(f"- Not-equal comparisons: {summary.get('not_equal_comparisons', 0)}")
+    lines.append(f"- Equal comparisons: {summary.get('equal_comparisons', 0)}")
+    lines.append(f"- Input events: {summary.get('input_events', 0)}")
+    lines.append(f"- Output events: {summary.get('output_events', 0)}")
+    lines.append(f"- Filter user-only: {summary.get('filter_user_only', True)}")
     lines.append("")
+
+    ai_hints = result.get("ai_hints", [])
+    if ai_hints:
+        lines.append("## AI Analysis")
+        lines.append("")
+        for hint in ai_hints:
+            lines.append(f"- {hint}")
+        lines.append("")
 
     return "\n".join(lines)

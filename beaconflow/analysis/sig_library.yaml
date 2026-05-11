@@ -297,6 +297,25 @@ packer_sigs:
       strings: ["Enigma protector", "Enigma Virtual Box"]
 
 anti_debug_sigs:
+  # IAT Hook 特征（EzHook 类型题目）
+  iat_hook:
+    name_patterns:
+      - "hook"
+      - "iat"
+      - "trampoline"
+      - "detour"
+      - "patch"
+    instruction_patterns:
+      - "JMP.*\\[.*\\]"          # 间接跳转（IAT hook 特征）
+      - "JMP.*QWORD.*PTR"        # x64 间接跳转
+      - "MOV.*\\[.*\\].*MOV"     # 覆写 IAT 条目
+      - "PUSH.*RET"              # 蹦床跳转
+    features:
+      - "modifies_iat_entry"
+      - "redirects_api_call"
+      - "has_trampoline"
+      - "preserves_original_function"
+
   # Windows 反调试
   windows:
     api_calls:
