@@ -6,7 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, normalize_to_ir, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, match_signatures, normalize_to_ir, rank_input_branches, recover_state_transitions, sig_match_to_markdown
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -126,6 +126,23 @@ def _cmd_normalize_ir(args: argparse.Namespace) -> int:
     )
     if args.format == "markdown":
         text = ir_to_markdown(result)
+    else:
+        text = json.dumps(result, indent=2)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_sig_match(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    result = match_signatures(
+        metadata,
+        sig_library_path=args.sig_library,
+    )
+    if args.format == "markdown":
+        text = sig_match_to_markdown(result)
     else:
         text = json.dumps(result, indent=2)
     if args.output:
@@ -1456,6 +1473,13 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_ir.add_argument("--format", choices=("json", "markdown"), default="markdown")
     normalize_ir.add_argument("--output")
     normalize_ir.set_defaults(func=_cmd_normalize_ir)
+
+    sig_match = sub.add_parser("sig-match", help="Match crypto/VM/packer/anti-debug signatures in metadata.")
+    sig_match.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    sig_match.add_argument("--sig-library", help="Path to custom signature library YAML file.")
+    sig_match.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    sig_match.add_argument("--output")
+    sig_match.set_defaults(func=_cmd_sig_match)
 
     ai_summary = sub.add_parser("ai-summary", help="Compact an existing BeaconFlow JSON report into an AI-first digest.")
     ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")

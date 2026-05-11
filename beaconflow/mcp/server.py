@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, normalize_to_ir, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, match_signatures, normalize_to_ir, rank_input_branches, recover_state_transitions, sig_match_to_markdown
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -459,6 +459,18 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
                 "function_name": {"type": "string", "description": "Function name to convert."},
                 "function_address": {"type": "string", "description": "Function start address (e.g. 0x401000)."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+            "required": ["metadata_path"],
+        },
+    },
+    "sig_match": {
+        "description": "Match crypto/VM/packer/anti-debug signatures in metadata. Identifies AES, DES, RC4, TEA, ChaCha20, SM4, MD5/SHA, Base64, CRC, VM interpreters, UPX, VMProtect, and anti-debug techniques.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
+                "sig_library_path": {"type": "string", "description": "Path to custom signature library YAML file."},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
             },
             "required": ["metadata_path"],

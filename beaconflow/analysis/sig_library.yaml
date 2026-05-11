@@ -1,0 +1,339 @@
+# BeaconFlow 扩展特征库 - Crypto/VM/Packer
+# 用于 role_detector 和 trace_compare 的特征识别
+
+crypto_sigs:
+  # AES 特征
+  aes:
+    name_patterns:
+      - "aes"
+      - "rijndael"
+      - "sub_bytes"
+      - "shift_rows"
+      - "mix_columns"
+      - "add_round_key"
+      - "key_expansion"
+    constant_signatures:
+      - 0x63  # AES S-box 首字节
+      - 0x7C
+      - 0x52
+      - 0x637C777B  # AES S-box 前4字节
+    instruction_patterns:
+      - "XOR.*0x1B"  # AES MixColumns 常量
+      - "SHL.*4"     # AES 行移位
+      - "SHR.*6"     # AES 行移位
+    table_size: 256  # S-box 大小
+
+  # DES 特征
+  des:
+    name_patterns:
+      - "des"
+      - "feistel"
+      - "permute"
+      - "ip_perm"
+      - "fp_perm"
+      - "expansion"
+    constant_signatures:
+      - 0x0E3292EA  # DES 初始置换
+      - 0x00FE0FE0  # DES 扩展置换
+    instruction_patterns:
+      - "SHL.*1"
+      - "SHR.*1"
+      - "AND.*0xFEFE"
+    rounds: 16
+
+  # RC4 特征
+  rc4:
+    name_patterns:
+      - "rc4"
+      - "arc4"
+      - "arcfour"
+      - "ksa"
+      - "prga"
+    instruction_patterns:
+      - "XOR.*\\[.*\\+.*\\]"  # S[i] ^ S[j]
+      - "ADD.*1"              # i = (i+1) % 256
+      - "AND.*0xFF"           # mod 256
+    table_size: 256
+
+  # TEA/XTEA/XXTEA 特征
+  tea:
+    name_patterns:
+      - "tea"
+      - "xtea"
+      - "xxtea"
+      - "encrypt_block"
+    constant_signatures:
+      - 0x9E3779B9  # TEA delta (黄金比例)
+      - 0x61C88647  # -TEA delta
+    instruction_patterns:
+      - "ADD.*0x9E3779B9"
+      - "SHL.*4"
+      - "SHR.*5"
+      - "XOR.*0x9E3779B9"
+    rounds: 32
+
+  # ChaCha20 特征
+  chacha20:
+    name_patterns:
+      - "chacha"
+      - "chacha20"
+      - "hchacha"
+      - "quarter_round"
+    constant_signatures:
+      - 0x61707865  # "expa"
+      - 0x3320646E  # "nd 3"
+      - 0x79622D32  # "2-by"
+      - 0x6B206574  # "te k"
+    instruction_patterns:
+      - "ADD.*0x61707865"
+      - "ROL.*16"
+      - "ROL.*12"
+      - "ROL.*8"
+      - "ROL.*7"
+    rounds: 20
+
+  # SM4 特征
+  sm4:
+    name_patterns:
+      - "sm4"
+      - "sms4"
+    constant_signatures:
+      - 0xA3B1BAC6  # SM4 FK
+      - 0x5D5D5D5D  # SM4 CK
+    instruction_patterns:
+      - "XOR.*0xA3B1BAC6"
+      - "SHL.*2"
+      - "SHL.*10"
+      - "SHL.*18"
+      - "SHL.*24"
+    rounds: 32
+    table_size: 256
+
+  # MD5/SHA 特征
+  hash:
+    name_patterns:
+      - "md5"
+      - "sha1"
+      - "sha256"
+      - "sha512"
+      - "hash"
+      - "digest"
+      - "update_hash"
+      - "finalize"
+    constant_signatures:
+      - 0x67452301  # MD5 init A
+      - 0xEFCDAB89  # MD5 init B
+      - 0x6A09E667  # SHA-256 init
+      - 0x5BE0CD19  # SHA-256 init H
+    instruction_patterns:
+      - "ADD.*0x5A827999"  # SHA-1 K
+      - "ADD.*0x6ED9EBA1"  # SHA-1 K
+      - "ROL.*5"
+      - "ROL.*30"
+
+  # Base64 特征
+  base64:
+    name_patterns:
+      - "base64"
+      - "b64"
+      - "encode64"
+      - "decode64"
+    constant_signatures:
+      - 0x3D  # '=' padding
+    instruction_patterns:
+      - "AND.*0x3F"  # mod 64
+      - "SHR.*2"
+      - "SHR.*4"
+      - "SHR.*6"
+    table_size: 64
+
+  # CRC 特征
+  crc:
+    name_patterns:
+      - "crc"
+      - "crc32"
+      - "crc16"
+      - "checksum"
+    constant_signatures:
+      - 0xEDB88320  # CRC32 多项式
+      - 0x04C11DB7  # CRC32 另一形式
+    instruction_patterns:
+      - "XOR.*0xEDB88320"
+      - "SHR.*1"
+      - "AND.*1"
+    table_size: 256
+
+vm_sigs:
+  # 通用 VM 解释器特征
+  generic_vm:
+    name_patterns:
+      - "vm"
+      - "interp"
+      - "interpret"
+      - "execute"
+      - "dispatch"
+      - "handler"
+      - "opcode"
+    instruction_patterns:
+      - "JMP.*\\[.*\\+.*\\*.*\\]"  # 跳转表
+      - "CMP.*0x"                   # 操作码比较
+      - "SHL.*8"                    # 字节偏移
+      - "AND.*0xFF"                 # 取低字节
+    features:
+      - "has_dispatch_loop"
+      - "has_opcode_table"
+      - "has_many_switch_cases"
+      - "has_stack_operations"
+
+  # VM 操作码类型
+  opcodes:
+    arithmetic:
+      - "add_op"
+      - "sub_op"
+      - "mul_op"
+      - "div_op"
+      - "mod_op"
+      - "neg_op"
+    logic:
+      - "and_op"
+      - "or_op"
+      - "xor_op"
+      - "not_op"
+      - "shl_op"
+      - "shr_op"
+    comparison:
+      - "cmp_op"
+      - "eq_op"
+      - "ne_op"
+      - "lt_op"
+      - "gt_op"
+      - "le_op"
+      - "ge_op"
+    control_flow:
+      - "jmp_op"
+      - "jz_op"
+      - "jnz_op"
+      - "call_op"
+      - "ret_op"
+      - "halt_op"
+    memory:
+      - "load_op"
+      - "store_op"
+      - "push_op"
+      - "pop_op"
+    io:
+      - "read_op"
+      - "write_op"
+      - "print_op"
+
+  # VM 栈操作特征
+  vm_stack:
+    name_patterns:
+      - "push"
+      - "pop"
+      - "stack"
+      - "sp"
+      - "bp"
+    instruction_patterns:
+      - "SUB.*4"     # push: sp -= 4
+      - "ADD.*4"     # pop: sp += 4
+      - "MOV.*\\[.*\\+.*\\]"  # 栈访问
+
+packer_sigs:
+  # UPX 特征
+  upx:
+    name_patterns:
+      - "upx"
+      - "UPX"
+      - "unpack"
+    constant_signatures:
+      - 0x55505821  # "UPX!"
+      - 0x21585055  # "UPX!" reversed
+    string_signatures:
+      - "UPX0"
+      - "UPX1"
+      - "UPX!"
+    features:
+      - "has_decompression_loop"
+      - "writes_to_executable_memory"
+      - "has_self_modifying_code"
+
+  # 通用壳特征
+  generic_packer:
+    name_patterns:
+      - "pack"
+      - "unpack"
+      - "decompress"
+      - "decrypt_code"
+      - "unprotect"
+    instruction_patterns:
+      - "XOR.*\\[.*\\]"           # 自解密
+      - "MOV.*\\[.*\\].*0x90"     # NOP 填充
+      - "CALL.*\\$"               # 获取当前 EIP
+      - "POP.*EBP"                # 获取基址
+    features:
+      - "has_self_modifying_code"
+      - "writes_to_code_section"
+      - "has_anti_debug"
+      - "has_import_reconstruction"
+      - "has_decompression"
+
+  # 常见壳标识
+  packer_ids:
+    themida:
+      strings: ["Themida", "Oreans", "WinLicense"]
+      constants: [0x54484D44]  # "THMD"
+    vmprotect:
+      strings: ["VMProtect", ".vmp0", ".vmp1"]
+      constants: [0x564D50]  # "VMP"
+    aspack:
+      strings: [".aspack", "ASPack"]
+      constants: [0x41535043]  # "ASPC"
+    pecompact:
+      strings: ["PECompact2"]
+    obsidium:
+      strings: ["Obsidium"]
+    enigma:
+      strings: ["Enigma protector", "Enigma Virtual Box"]
+
+anti_debug_sigs:
+  # Windows 反调试
+  windows:
+    api_calls:
+      - "IsDebuggerPresent"
+      - "CheckRemoteDebuggerPresent"
+      - "NtQueryInformationProcess"
+      - "NtQuerySystemInformation"
+      - "OutputDebugString"
+      - "GetTickCount"
+      - "QueryPerformanceCounter"
+      - "ZwQueryInformationProcess"
+    techniques:
+      - "int 2d"              # 软件中断
+      - "rdtsc"               # 时间检测
+      - "cmpxchg8b"           # 调试器检测
+      - "trap_flag"           # 单步检测
+      - "hardware_bp_check"   # 硬件断点检测
+
+  # Linux 反调试
+  linux:
+    api_calls:
+      - "ptrace"
+      - "prctl"
+      - "signal"
+      - "sigaction"
+    techniques:
+      - "ptrace(PTRACE_TRACEME)"  # 自我追踪
+      - "/proc/self/status"        # 检查 TracerPid
+      - "/proc/self/maps"          # 检查内存映射
+      - "SIGTRAP"                  # 信号检测
+
+  # 通用反调试
+  generic:
+    techniques:
+      - "timing_check"           # 时间差检测
+      - "exception_handler"      # 异常处理检测
+      - "process_name_check"     # 进程名检测
+      - "window_name_check"      # 窗口名检测
+      - "registry_check"         # 注册表检测
+      - "file_existence_check"   # 文件存在检测
