@@ -18,6 +18,8 @@ from beaconflow.models import hex_addr
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws_add_note, add_report as ws_add_report, add_run as ws_add_run, case_to_markdown, destroy_case, init_case, list_notes, list_reports, list_runs, load_manifest, summarize_case
 from beaconflow.wasm_parser import wasm_to_metadata
+from beaconflow.runtime.trace_calls import trace_calls, trace_calls_to_markdown
+from beaconflow.runtime.trace_compare import trace_compare as trace_compare_rt, trace_compare_to_markdown as trace_compare_rt_to_markdown
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -165,6 +167,68 @@ def _cmd_export_wasm(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+
+def _cmd_trace_calls(args: argparse.Namespace) -> int:
+    hook_list = args.hook if args.hook else None
+    result = trace_calls(
+        target=args.target,
+        stdin_data=args.stdin,
+        args=args.program_args,
+        auto_newline=args.auto_newline,
+        run_cwd=args.run_cwd,
+        timeout=args.timeout,
+        hook=hook_list,
+        max_read=args.max_read,
+        max_events=args.max_events,
+    )
+    if args.format == "markdown":
+        text = trace_calls_to_markdown(result)
+    else:
+        text = json.dumps(result, indent=2, ensure_ascii=False)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_trace_compare_rt(args: argparse.Namespace) -> int:
+    metadata = None
+    if args.metadata:
+        try:
+            metadata = json.loads(Path(args.metadata).read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    addr_list = None
+    if args.address:
+        addr_list = [a.strip() for a in args.address.split(",") if a.strip()]
+
+    result = trace_compare_rt(
+        target=args.target,
+        metadata=metadata,
+        metadata_path=args.metadata,
+        stdin_data=args.stdin,
+        auto_newline=args.auto_newline,
+        args=args.program_args,
+        run_cwd=args.run_cwd,
+        focus_function=args.focus_function,
+        addresses=addr_list,
+        address_min=args.address_min,
+        address_max=args.address_max,
+        max_events=args.max_events,
+        timeout=args.timeout,
+    )
+    if args.format == "markdown":
+        text = trace_compare_rt_to_markdown(result)
+    else:
+        text = json.dumps(result, indent=2, ensure_ascii=False)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
 
 
 def _cmd_init_case(args: argparse.Namespace) -> int:
@@ -1725,6 +1789,38 @@ def build_parser() -> argparse.ArgumentParser:
     export_wasm.add_argument("--target", required=True, help="WASM binary file to analyze.")
     export_wasm.add_argument("--output", required=True, help="Output metadata JSON path.")
     export_wasm.set_defaults(func=_cmd_export_wasm)
+
+    # ---- Runtime Trace 命令 ----
+    trace_calls_cmd = sub.add_parser("trace-calls", help="Trace library function calls (strcmp/memcmp/etc.) at runtime using Frida.")
+    trace_calls_cmd.add_argument("--target", required=True, help="Target binary to run.")
+    trace_calls_cmd.add_argument("--stdin", help="Stdin data to send to the target.")
+    trace_calls_cmd.add_argument("--auto-newline", action="store_true", default=True, help="Auto-append newline to stdin.")
+    trace_calls_cmd.add_argument("--run-cwd", help="Working directory for the target process.")
+    trace_calls_cmd.add_argument("--timeout", type=int, default=30, help="Timeout in seconds.")
+    trace_calls_cmd.add_argument("--hook", help="Comma-separated list of functions to hook (default: strcmp,strncmp,memcmp,strlen,...).")
+    trace_calls_cmd.add_argument("--max-read", type=int, default=128, help="Max bytes to read from pointer args.")
+    trace_calls_cmd.add_argument("--max-events", type=int, default=1000, help="Max events to capture.")
+    trace_calls_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    trace_calls_cmd.add_argument("--output", help="Output file path.")
+    trace_calls_cmd.add_argument("program_args", nargs="*", help="Arguments to pass to the target.")
+    trace_calls_cmd.set_defaults(func=_cmd_trace_calls)
+
+    trace_compare_cmd = sub.add_parser("trace-compare-rt", help="Trace compare instructions at runtime using Frida. Extracts register values at cmp/test/jcc points.")
+    trace_compare_cmd.add_argument("--target", required=True, help="Target binary to run.")
+    trace_compare_cmd.add_argument("--metadata", help="Path to metadata JSON (to find decision points automatically).")
+    trace_compare_cmd.add_argument("--stdin", help="Stdin data to send to the target.")
+    trace_compare_cmd.add_argument("--auto-newline", action="store_true", default=True, help="Auto-append newline to stdin.")
+    trace_compare_cmd.add_argument("--run-cwd", help="Working directory for the target process.")
+    trace_compare_cmd.add_argument("--focus-function", help="Only hook decision points in this function.")
+    trace_compare_cmd.add_argument("--address", help="Comma-separated list of addresses to hook (hex).")
+    trace_compare_cmd.add_argument("--address-min", help="Minimum address to hook (hex).")
+    trace_compare_cmd.add_argument("--address-max", help="Maximum address to hook (hex).")
+    trace_compare_cmd.add_argument("--timeout", type=int, default=30, help="Timeout in seconds.")
+    trace_compare_cmd.add_argument("--max-events", type=int, default=1000, help="Max events to capture.")
+    trace_compare_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    trace_compare_cmd.add_argument("--output", help="Output file path.")
+    trace_compare_cmd.add_argument("program_args", nargs="*", help="Arguments to pass to the target.")
+    trace_compare_cmd.set_defaults(func=_cmd_trace_compare_rt)
 
     # ---- Case Workspace 命令 ----
     init_case_cmd = sub.add_parser("init-case", help="Initialize a case workspace for a target binary.")

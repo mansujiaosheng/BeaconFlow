@@ -17,6 +17,8 @@ from beaconflow.metadata import build_trace_metadata
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws_add_note, add_report as ws_add_report, add_run as ws_add_run, case_to_markdown, destroy_case, init_case, list_notes, list_reports, list_runs, load_manifest, summarize_case
 from beaconflow.wasm_parser import wasm_to_metadata
+from beaconflow.runtime.trace_calls import trace_calls, trace_calls_to_markdown
+from beaconflow.runtime.trace_compare import trace_compare, trace_compare_to_markdown
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -594,6 +596,44 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "output_path": {"type": "string", "description": "Output metadata JSON path."},
             },
             "required": ["wasm_path", "output_path"],
+        },
+    },
+    "trace_calls": {
+        "description": "Trace library function calls (strcmp/memcmp/strncmp/strlen/etc.) at runtime using Frida. Captures actual parameter values, return values, and call sites. Most useful for seeing what values are being compared in CTF challenges.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Target binary to run."},
+                "stdin_data": {"type": "string", "description": "Stdin data to send to the target."},
+                "auto_newline": {"type": "boolean", "default": True, "description": "Auto-append newline to stdin."},
+                "run_cwd": {"type": "string", "description": "Working directory for the target process."},
+                "timeout": {"type": "integer", "default": 30, "description": "Timeout in seconds."},
+                "hook": {"type": "string", "description": "Comma-separated list of functions to hook."},
+                "max_read": {"type": "integer", "default": 128, "description": "Max bytes to read from pointer args."},
+                "max_events": {"type": "integer", "default": 1000, "description": "Max events to capture."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+            "required": ["target"],
+        },
+    },
+    "trace_compare": {
+        "description": "Trace compare instructions at runtime using Frida. Extracts register values at cmp/test/jcc decision points. Helps AI understand what values are being compared at branch points. Currently supports x86/x64 only.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Target binary to run."},
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON (to find decision points automatically)."},
+                "stdin_data": {"type": "string", "description": "Stdin data to send to the target."},
+                "auto_newline": {"type": "boolean", "default": True, "description": "Auto-append newline to stdin."},
+                "focus_function": {"type": "string", "description": "Only hook decision points in this function."},
+                "addresses": {"type": "string", "description": "Comma-separated list of addresses to hook (hex)."},
+                "address_min": {"type": "string", "description": "Minimum address to hook (hex)."},
+                "address_max": {"type": "string", "description": "Maximum address to hook (hex)."},
+                "timeout": {"type": "integer", "default": 30, "description": "Timeout in seconds."},
+                "max_events": {"type": "integer", "default": 1000, "description": "Max events to capture."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+            "required": ["target"],
         },
     },
 }
@@ -1345,6 +1385,49 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             wasm_path=arguments["wasm_path"],
             output_path=arguments["output_path"],
         )
+        return _tool_result(result)
+
+    if name == "trace_calls":
+        result = trace_calls(
+            target=arguments["target"],
+            stdin_data=arguments.get("stdin_data"),
+            auto_newline=arguments.get("auto_newline", True),
+            run_cwd=arguments.get("run_cwd"),
+            timeout=arguments.get("timeout", 30),
+            hook=arguments.get("hook"),
+            max_read=arguments.get("max_read", 128),
+            max_events=arguments.get("max_events", 1000),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(trace_calls_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "trace_compare":
+        metadata = None
+        if arguments.get("metadata_path"):
+            try:
+                metadata = json.loads(Path(arguments["metadata_path"]).read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        addr_list = None
+        if arguments.get("addresses"):
+            addr_list = [a.strip() for a in arguments["addresses"].split(",") if a.strip()]
+        result = trace_compare(
+            target=arguments["target"],
+            metadata=metadata,
+            metadata_path=arguments.get("metadata_path"),
+            stdin_data=arguments.get("stdin_data"),
+            auto_newline=arguments.get("auto_newline", True),
+            run_cwd=arguments.get("run_cwd"),
+            focus_function=arguments.get("focus_function"),
+            addresses=addr_list,
+            address_min=arguments.get("address_min"),
+            address_max=arguments.get("address_max"),
+            max_events=arguments.get("max_events", 1000),
+            timeout=arguments.get("timeout", 30),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(trace_compare_to_markdown(result))
         return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")

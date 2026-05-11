@@ -172,6 +172,8 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `list_case_reports` | List all reports in the case workspace. |
 | `list_case_notes` | List all notes in the case workspace. |
 | `export_wasm_metadata` | Export metadata from a WebAssembly (.wasm) binary using pure Python parser. No external dependencies required. |
+| `trace_calls` | Trace library function calls (strcmp/memcmp/strncmp/strlen/etc.) at runtime using Frida. Captures actual parameter values, return values, and call sites. Most useful for seeing what values are being compared in CTF challenges. |
+| `trace_compare_rt` | Trace compare instructions at runtime using Frida. Extracts register values at cmp/test/jcc decision points. Currently supports x86/x64 only. |
 
 ## Key Parameters
 
