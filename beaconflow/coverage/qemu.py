@@ -68,12 +68,13 @@ def collect_qemu_trace(
     )
     if not log_path.exists():
         raise FileNotFoundError(f"QEMU did not create trace log: {log_path}")
+    clean_stderr = _filter_wsl_noise(completed.stderr or "") if backend == "wsl" else (completed.stderr or "")
     return QemuRunResult(
         log_path=log_path,
         command=command,
         returncode=completed.returncode,
         stdout=completed.stdout or "",
-        stderr=completed.stderr or "",
+        stderr=clean_stderr,
         backend=backend,
     )
 
@@ -97,6 +98,25 @@ def qemu_available(qemu_arch: str) -> dict[str, str | None]:
         except (subprocess.SubprocessError, OSError):
             wsl = None
     return {"native": native, "wsl": wsl}
+
+
+def _filter_wsl_noise(stderr: str) -> str:
+    wsl_noise_patterns = [
+        re.compile(r"^\s*$"),
+        re.compile(r"操作完成|正在启动|已启动|按 Enter|NAT|localhost|127\.0\.0\.1", re.IGNORECASE),
+        re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]"),
+    ]
+    lines = []
+    for line in stderr.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if any(p.search(stripped) for p in wsl_noise_patterns[1:]):
+            continue
+        cleaned = wsl_noise_patterns[2].sub("", stripped)
+        if cleaned:
+            lines.append(cleaned)
+    return "\n".join(lines)
 
 
 def _build_qemu_command(

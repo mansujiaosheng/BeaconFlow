@@ -15,11 +15,18 @@ from beaconflow.metadata import build_trace_metadata
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
 
 
+def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
+    brief = fmt_choice == "markdown-brief"
+    if fmt_choice in ("markdown", "markdown-brief"):
+        return md_func(result, brief=brief, **kwargs)
+    return json.dumps(result, indent=2)
+
+
 def _cmd_analyze(args: argparse.Namespace) -> int:
     metadata = load_metadata(args.metadata)
     coverage = load_drcov(args.coverage)
     result = analyze_coverage(metadata, coverage)
-    text = coverage_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    text = _fmt_markdown(args.format, coverage_to_markdown, result)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -46,7 +53,7 @@ def _cmd_flow(args: argparse.Namespace) -> int:
         address_start=address_start,
         address_end=address_end,
     )
-    text = flow_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    text = _fmt_markdown(args.format, flow_to_markdown, result)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -65,7 +72,7 @@ def _cmd_flow_diff(args: argparse.Namespace) -> int:
         address_start=address_start,
         address_end=address_end,
     )
-    text = flow_diff_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    text = _fmt_markdown(args.format, flow_diff_to_markdown, result)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -87,7 +94,7 @@ def _cmd_deflatten(args: argparse.Namespace) -> int:
         dispatcher_min_succ=args.dispatcher_min_succ,
         dispatcher_mode=args.dispatcher_mode,
     )
-    text = deflatten_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    text = _fmt_markdown(args.format, deflatten_to_markdown, result)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -116,7 +123,7 @@ def _cmd_deflatten_merge(args: argparse.Namespace) -> int:
         dispatcher_min_succ=args.dispatcher_min_succ,
         dispatcher_mode=args.dispatcher_mode,
     )
-    text = deflatten_merge_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    text = _fmt_markdown(args.format, deflatten_merge_to_markdown, result)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -145,7 +152,7 @@ def _cmd_recover_state(args: argparse.Namespace) -> int:
         dispatcher_min_succ=args.dispatcher_min_succ,
         dispatcher_mode=args.dispatcher_mode,
     )
-    text = state_transitions_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    text = _fmt_markdown(args.format, state_transitions_to_markdown, result)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -194,7 +201,7 @@ def _cmd_branch_rank(args: argparse.Namespace) -> int:
         address_start=address_start,
         address_end=address_end,
     )
-    text = branch_rank_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    text = _fmt_markdown(args.format, branch_rank_to_markdown, result, top=args.top)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -371,7 +378,7 @@ def _cmd_record_flow(args: argparse.Namespace) -> int:
         focus_function=args.focus_function,
     )
     result["coverage_path"] = str(run_result.log_path)
-    text = flow_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    text = _fmt_markdown(args.format, flow_to_markdown, result)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -524,7 +531,7 @@ def _cmd_qemu_explore(args: argparse.Namespace) -> int:
             ),
         )[: max(1, args.keep_top)],
     })
-    text = _qemu_explore_to_markdown(report) if args.format == "markdown" else json.dumps(report, indent=2)
+    text = _fmt_markdown(args.format, _qemu_explore_to_markdown, report)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -769,7 +776,7 @@ def build_parser() -> argparse.ArgumentParser:
     analyze = sub.add_parser("analyze", help="Analyze drcov coverage against exported IDA metadata.")
     analyze.add_argument("--metadata", required=True, help="IDA metadata JSON exported by ida_scripts/export_ida_metadata.py")
     analyze.add_argument("--coverage", required=True, help="DynamoRIO drcov coverage file")
-    analyze.add_argument("--format", choices=("json", "markdown"), default="json")
+    analyze.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     analyze.add_argument("--output")
     analyze.set_defaults(func=_cmd_analyze)
 
@@ -788,7 +795,7 @@ def build_parser() -> argparse.ArgumentParser:
     flow.add_argument("--block-size", type=int, default=4, help="Instruction/block size for --address-log input.")
     flow.add_argument("--address-min", help="Keep only address-log events at or above this address.")
     flow.add_argument("--address-max", help="Keep only address-log events below this address.")
-    flow.add_argument("--format", choices=("json", "markdown"), default="json")
+    flow.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     flow.add_argument("--focus-function", help="Only keep events mapped to this function name or start address.")
     flow.add_argument("--from", dest="from_", help="Start address or function name for range filtering (inclusive).")
     flow.add_argument("--to", dest="to", help="End address or function name for range filtering (exclusive).")
@@ -809,7 +816,7 @@ def build_parser() -> argparse.ArgumentParser:
     flow_diff.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
     flow_diff.add_argument("--address-min", help="Keep only address-log events at or above this address.")
     flow_diff.add_argument("--address-max", help="Keep only address-log events below this address.")
-    flow_diff.add_argument("--format", choices=("json", "markdown"), default="json")
+    flow_diff.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     flow_diff.add_argument("--output")
     flow_diff.set_defaults(func=_cmd_flow_diff)
 
@@ -827,7 +834,7 @@ def build_parser() -> argparse.ArgumentParser:
     deflatten.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
     deflatten.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
     deflatten.add_argument("--dispatcher-mode", choices=("strict", "balanced", "aggressive"), default="strict", help="Dispatcher selection mode. strict requires hot + multi-predecessor + multi-successor shape; aggressive is legacy heuristic-like.")
-    deflatten.add_argument("--format", choices=("json", "markdown"), default="json")
+    deflatten.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     deflatten.add_argument("--output")
     deflatten.set_defaults(func=_cmd_deflatten)
 
@@ -836,7 +843,7 @@ def build_parser() -> argparse.ArgumentParser:
     coverage_source = deflatten_merge_parser.add_mutually_exclusive_group(required=True)
     coverage_source.add_argument("--coverage", nargs="+", help="Two or more drcov log files from different inputs.")
     coverage_source.add_argument("--address-log", nargs="+", help="Two or more QEMU address log files from different inputs.")
-    deflatten_merge_parser.add_argument("--label", action="append", help="Label for each coverage file (in order). Can be repeated.")
+    deflatten_merge_parser.add_argument("--label", nargs="+", action="extend", help="Label(s) for each coverage file (in order). Can be repeated or space-separated: --label A B C or --label A --label B --label C.")
     deflatten_merge_parser.add_argument("--focus-function", help="Only analyze events in this function.")
     deflatten_merge_parser.add_argument("--from", dest="from_", help="Start address or function name for range filtering (inclusive).")
     deflatten_merge_parser.add_argument("--to", dest="to", help="End address or function name for range filtering (exclusive).")
@@ -847,7 +854,7 @@ def build_parser() -> argparse.ArgumentParser:
     deflatten_merge_parser.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
     deflatten_merge_parser.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
     deflatten_merge_parser.add_argument("--dispatcher-mode", choices=("strict", "balanced", "aggressive"), default="strict", help="Dispatcher selection mode. strict avoids hot-loop/state-machine false positives; aggressive is legacy heuristic-like.")
-    deflatten_merge_parser.add_argument("--format", choices=("json", "markdown"), default="json")
+    deflatten_merge_parser.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     deflatten_merge_parser.add_argument("--output")
     deflatten_merge_parser.set_defaults(func=_cmd_deflatten_merge)
 
@@ -856,7 +863,7 @@ def build_parser() -> argparse.ArgumentParser:
     state_source = recover_state_parser.add_mutually_exclusive_group(required=True)
     state_source.add_argument("--coverage", nargs="+", help="Two or more drcov log files from different inputs.")
     state_source.add_argument("--address-log", nargs="+", help="Two or more QEMU address log files from different inputs.")
-    recover_state_parser.add_argument("--label", action="append", help="Label for each coverage file (in order). Can be repeated.")
+    recover_state_parser.add_argument("--label", nargs="+", action="extend", help="Label(s) for each coverage file (in order). Can be repeated or space-separated: --label A B C or --label A --label B --label C.")
     recover_state_parser.add_argument("--focus-function", help="Only analyze events in this function.")
     recover_state_parser.add_argument("--from", dest="from_", help="Start address or function name for range filtering (inclusive).")
     recover_state_parser.add_argument("--to", dest="to", help="End address or function name for range filtering (exclusive).")
@@ -867,7 +874,7 @@ def build_parser() -> argparse.ArgumentParser:
     recover_state_parser.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
     recover_state_parser.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
     recover_state_parser.add_argument("--dispatcher-mode", choices=("strict", "balanced", "aggressive"), default="strict", help="Dispatcher selection mode. strict avoids hot-loop/state-machine false positives; aggressive is legacy heuristic-like.")
-    recover_state_parser.add_argument("--format", choices=("json", "markdown"), default="json")
+    recover_state_parser.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     recover_state_parser.add_argument("--output")
     recover_state_parser.set_defaults(func=_cmd_recover_state)
 
@@ -891,7 +898,8 @@ def build_parser() -> argparse.ArgumentParser:
     branch_rank.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
     branch_rank.add_argument("--address-min", help="Keep only address-log events at or above this address.")
     branch_rank.add_argument("--address-max", help="Keep only address-log events below this address.")
-    branch_rank.add_argument("--format", choices=("json", "markdown"), default="json")
+    branch_rank.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    branch_rank.add_argument("--top", type=int, default=10, help="Only show top N ranked branches in markdown report (default: 10).")
     branch_rank.add_argument("--output")
     branch_rank.set_defaults(func=_cmd_branch_rank)
 
@@ -940,7 +948,7 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--drrun")
     record.add_argument("--timeout", type=int, default=120, help="Timeout in seconds (default: 120).")
     record.add_argument("--max-events", type=int, default=0, help="Maximum flow events to return; 0 means all.")
-    record.add_argument("--format", choices=("json", "markdown"), default="json")
+    record.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     record.add_argument("--focus-function", help="Only keep events mapped to this function name or start address.")
     record.add_argument("--output")
     record.add_argument("--stdin", help="Text to send to target stdin.")
@@ -997,7 +1005,7 @@ def build_parser() -> argparse.ArgumentParser:
     qemu_explore.add_argument("--focus-function")
     qemu_explore.add_argument("--success-regex", help="Classify runs as success when stdout/stderr matches.")
     qemu_explore.add_argument("--failure-regex", help="Classify runs as failure when stdout/stderr matches.")
-    qemu_explore.add_argument("--format", choices=("json", "markdown"), default="json")
+    qemu_explore.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     qemu_explore.add_argument("--output")
     qemu_explore.add_argument("target_args", nargs=argparse.REMAINDER)
     qemu_explore.set_defaults(func=_cmd_qemu_explore)

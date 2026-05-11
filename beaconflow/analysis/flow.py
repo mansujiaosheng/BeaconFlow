@@ -230,7 +230,7 @@ def _coverage_trace_info(coverage: CoverageData) -> dict[str, str | None]:
 
 def _hit_count_warning(coverage: CoverageData) -> str | None:
     if getattr(coverage, "hit_count_precision", None) == "translation-log":
-        return "QEMU in_asm logs translated blocks, not exact executions; use exec,nochain when hit counts, loop counts, dispatcher frequency, or timing/path oracles matter."
+        return "Hit counts shown are translation counts (not execution counts) because QEMU in_asm logs translated blocks, not exact executions. Use exec,nochain trace mode when hit counts, loop counts, dispatcher frequency, or timing/path oracles matter."
     return None
 
 

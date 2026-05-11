@@ -3,6 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 
+def _hit_label(result: dict[str, Any]) -> str:
+    precision = result.get("summary", {}).get("hit_count_precision", "unknown")
+    if precision == "translation-log":
+        return "translations"
+    return "hits"
+
+
 def _ai_digest_lines(result: dict[str, Any]) -> list[str]:
     digest = result.get("ai_digest")
     if not digest:
@@ -30,7 +37,7 @@ def _ai_digest_lines(result: dict[str, Any]) -> list[str]:
     return lines
 
 
-def coverage_to_markdown(result: dict[str, Any]) -> str:
+def coverage_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
     summary = result["summary"]
     lines = [
         "# Coverage Summary",
@@ -40,6 +47,12 @@ def coverage_to_markdown(result: dict[str, Any]) -> str:
         "",
     ]
     lines.extend(_ai_digest_lines(result))
+    if brief:
+        top_covered = sorted(result["covered_functions"], key=lambda x: x["coverage_percent"], reverse=True)[:5]
+        lines.extend(["## Top 5 Covered Functions (Brief)", "", "| Function | Address | Coverage |", "| --- | --- | ---: |"])
+        for item in top_covered:
+            lines.append(f"| `{item['name']}` | `{item['start']}` | {item['coverage_percent']}% |")
+        return "\n".join(lines) + "\n"
     lines.extend(["## Covered Functions", "", "| Function | Address | Blocks | Coverage |", "| --- | --- | ---: | ---: |"])
 
     for item in result["covered_functions"][:100]:
@@ -55,7 +68,7 @@ def coverage_to_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def deflatten_to_markdown(result: dict[str, Any]) -> str:
+def deflatten_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
     summary = result.get("summary", {})
     lines = [
         "# BeaconFlow Deflatten Report",
@@ -76,6 +89,26 @@ def deflatten_to_markdown(result: dict[str, Any]) -> str:
         f"- Hit-count precision: {summary.get('hit_count_precision', '<unknown>')}",
         "",
     ])
+    if summary.get("trace_mode") == "in_asm":
+        lines.extend([
+            "> **Tip**: Using `exec,nochain` trace mode (e.g. `--trace-mode exec,nochain`) provides exact hit counts and more accurate dispatcher identification.",
+            "",
+        ])
+    if brief:
+        spine = result.get("real_execution_spine", [])
+        if spine:
+            lines.extend(["## Execution Spine (Top 10)", ""])
+            for index, block in enumerate(spine[:10], start=1):
+                lines.append(f"{index}. `{block}`")
+            if len(spine) > 10:
+                lines.append(f"... {len(spine) - 10} more blocks")
+        branch_points = result.get("real_branch_points", [])
+        if branch_points:
+            lines.extend(["", "## Branch Points", ""])
+            for item in branch_points[:5]:
+                succs = ", ".join(f"`{s}`" for s in item["successors"])
+                lines.append(f"- `{item['block']}` -> {succs}")
+        return "\n".join(lines) + "\n"
 
     warnings = result.get("warnings", [])
     if warnings:
@@ -125,16 +158,18 @@ def deflatten_to_markdown(result: dict[str, Any]) -> str:
 
     edges = result.get("real_edges", [])
     if edges:
+        hl = _hit_label(result)
         lines.extend(["## Real Edges (Top 30)", ""])
         for item in edges[:30]:
-            lines.append(f"- `{item['from']}` -> `{item['to']}` hits={item['hits']}")
+            lines.append(f"- `{item['from']}` -> `{item['to']}` {hl}={item['hits']}")
         lines.append("")
 
     hot_blocks = result.get("real_hot_blocks", [])
     if hot_blocks:
+        hl = _hit_label(result)
         lines.extend(["## Real Hot Blocks (Top 20)", ""])
         for item in hot_blocks[:20]:
-            lines.append(f"- `{item['block']}` hits={item['hits']}")
+            lines.append(f"- `{item['block']}` {hl}={item['hits']}")
         lines.append("")
 
     lines.extend(["## How to Use This Report", ""])
@@ -147,7 +182,7 @@ def deflatten_to_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def flow_to_markdown(result: dict[str, Any]) -> str:
+def flow_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
     summary = result["summary"]
     diagnostics = result.get("diagnostics", {})
     ai = result.get("ai_report", {})
@@ -185,6 +220,20 @@ def flow_to_markdown(result: dict[str, Any]) -> str:
     for item in ai.get("how_to_use", []):
         lines.append(f"- {item}")
 
+    if brief:
+        lines.extend(["", "## Function Order (Brief)", "", ai.get("user_function_order_text", "<none>"), ""])
+        spine = ai.get("execution_spine_preview", [])
+        if spine:
+            lines.extend(["", "## Execution Spine Preview (Top 10)", ""])
+            for index, block in enumerate(spine[:10], start=1):
+                lines.append(f"{index}. `{block}`")
+        branch_pts = ai.get("user_branch_points", [])
+        if branch_pts:
+            lines.extend(["", "## Branch Points (Top 5)", ""])
+            for item in branch_pts[:5]:
+                lines.append(f"- `{item['block']}` -> {', '.join(f'`{x}`' for x in item['observed_successors'])}")
+        return "\n".join(lines) + "\n"
+
     lines.extend(["", "## User Function Order", "", ai.get("user_function_order_text", "<none>"), ""])
     lines.extend(["", "## Full Function Order", "", ai.get("function_order_text", "<none>"), ""])
 
@@ -218,8 +267,9 @@ def flow_to_markdown(result: dict[str, Any]) -> str:
         lines.append(f"- `{item['block']}` <- {', '.join(f'`{x}`' for x in item['observed_predecessors'])}")
 
     lines.extend(["", "## User Loop-Like Edges", ""])
+    hl = _hit_label(result)
     for item in ai.get("user_loop_like_edges", []):
-        lines.append(f"- `{item['from']}` -> `{item['to']}` hits={item['hits']}")
+        lines.append(f"- `{item['from']}` -> `{item['to']}` {hl}={item['hits']}")
 
     lines.extend(["", "## Next Steps", ""])
     for item in ai.get("next_steps", []):
@@ -228,7 +278,7 @@ def flow_to_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def deflatten_merge_to_markdown(result: dict[str, Any]) -> str:
+def deflatten_merge_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
     summary = result.get("summary", {})
     lines = [
         "# BeaconFlow Deflatten Merge Report",
@@ -257,6 +307,25 @@ def deflatten_merge_to_markdown(result: dict[str, Any]) -> str:
         for warning in warnings:
             lines.append(f"- {warning}")
         lines.append("")
+
+    if brief:
+        per_trace = result.get("per_trace_summary", [])
+        if per_trace:
+            lines.extend(["## Per-Trace Summary", ""])
+            lines.append("| Trace | Real Blocks | Real Edges |")
+            lines.append("| --- | ---: | ---: |")
+            for item in per_trace:
+                lines.append(f"| `{item['label']}` | {item['real_blocks']} | {item['real_edges']} |")
+            lines.append("")
+        input_dep = result.get("input_dependent_path", {})
+        input_edges = input_dep.get("edges", [])
+        if input_edges:
+            lines.extend(["## Input-Dependent Edges (Top 5)", ""])
+            for item in input_edges[:5]:
+                lines.append(f"- `{item['from']}` -> `{item['to']}` covered_by={item['coverage_ratio']}")
+        else:
+            lines.extend(["## Input-Dependent Edges", "", "*No input-dependent edges found in the specified address range. This means all traces followed the same path within this range. Try widening the range (--from/--to) or adding more diverse inputs.*", ""])
+        return "\n".join(lines) + "\n"
 
     per_trace = result.get("per_trace_summary", [])
     if per_trace:
@@ -299,10 +368,11 @@ def deflatten_merge_to_markdown(result: dict[str, Any]) -> str:
 
     common_path = result.get("common_path", {})
     common_edges = common_path.get("edges", [])
+    hl = _hit_label(result)
     if common_edges:
         lines.extend(["## Common Path (All Traces)", "", f"*{common_path.get('description', '')}*", ""])
         for item in common_edges[:30]:
-            lines.append(f"- `{item['from']}` -> `{item['to']}` hits={item['total_hits']} covered_by={item['coverage_ratio']}")
+            lines.append(f"- `{item['from']}` -> `{item['to']}` {hl}={item['total_hits']} covered_by={item['coverage_ratio']}")
         if len(common_edges) > 30:
             lines.append(f"... {len(common_edges) - 30} more common edges")
         lines.append("")
@@ -312,7 +382,7 @@ def deflatten_merge_to_markdown(result: dict[str, Any]) -> str:
     if input_edges:
         lines.extend(["## Input-Dependent Path (Key Branches)", "", f"*{input_dep.get('description', '')}*", ""])
         for item in input_edges[:30]:
-            lines.append(f"- `{item['from']}` -> `{item['to']}` hits={item['total_hits']} covered_by={item['coverage_ratio']}")
+            lines.append(f"- `{item['from']}` -> `{item['to']}` {hl}={item['total_hits']} covered_by={item['coverage_ratio']}")
         if len(input_edges) > 30:
             lines.append(f"... {len(input_edges) - 30} more input-dependent edges")
         lines.append("")
@@ -321,14 +391,14 @@ def deflatten_merge_to_markdown(result: dict[str, Any]) -> str:
     if edges:
         lines.extend(["## All Real Edges (Top 30)", ""])
         for item in edges[:30]:
-            lines.append(f"- `{item['from']}` -> `{item['to']}` hits={item['total_hits']} covered_by={item['coverage_ratio']}")
+            lines.append(f"- `{item['from']}` -> `{item['to']}` {hl}={item['total_hits']} covered_by={item['coverage_ratio']}")
         lines.append("")
 
     blocks = real_cfg.get("blocks", [])
     if blocks:
         lines.extend(["## All Real Blocks (Top 30)", ""])
         for item in blocks[:30]:
-            lines.append(f"- `{item['block']}` hits={item['total_hits']} covered_by={item['coverage_ratio']}")
+            lines.append(f"- `{item['block']}` {hl}={item['total_hits']} covered_by={item['coverage_ratio']}")
         lines.append("")
 
     lines.extend(["## How to Use This Report", ""])
@@ -341,7 +411,7 @@ def deflatten_merge_to_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def state_transitions_to_markdown(result: dict[str, Any]) -> str:
+def state_transitions_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
     summary = result.get("summary", {})
     ai = result.get("ai_interpretation", {})
     lines = [
@@ -370,6 +440,16 @@ def state_transitions_to_markdown(result: dict[str, Any]) -> str:
         for warning in warnings:
             lines.append(f"- {warning}")
         lines.append("")
+
+    if brief:
+        inp = result.get("input_dependent_transitions", [])
+        if inp:
+            lines.extend(["## Input-Dependent Transitions (Top 5)", ""])
+            for item in inp[:5]:
+                lines.append(f"- `{item['from_block']}` -> `{item['to_block']}` ratio={item['coverage_ratio']}")
+        else:
+            lines.extend(["## Input-Dependent Transitions", "", "*No input-dependent transitions found. All branches in the specified range are deterministic (same path regardless of input). Try widening the range (--from/--to) or using more diverse inputs.*", ""])
+        return "\n".join(lines) + "\n"
 
     branch_blocks = result.get("branch_blocks", [])
     if branch_blocks:
@@ -422,7 +502,7 @@ def state_transitions_to_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def branch_rank_to_markdown(result: dict[str, Any]) -> str:
+def branch_rank_to_markdown(result: dict[str, Any], top: int = 10, brief: bool = False) -> str:
     summary = result.get("summary", {})
     ai = result.get("ai_interpretation", {})
     lines = [
@@ -436,6 +516,7 @@ def branch_rank_to_markdown(result: dict[str, Any]) -> str:
         f"- Total traces: {summary.get('total_traces', 0)}",
         f"- Baseline: `{summary.get('baseline', '<none>')}`",
         f"- Ranked branch points: {summary.get('ranked_branch_points', 0)}",
+        f"- Showing top: {top}",
         f"- Focus function: {summary.get('focus_function') or '<none>'}",
         f"- Hit-count precision: {summary.get('hit_count_precision', '<unknown>')}",
         "",
@@ -458,10 +539,21 @@ def branch_rank_to_markdown(result: dict[str, Any]) -> str:
             f"{trace['unique_blocks']} | {trace['unique_transitions']} |"
         )
 
+    if brief:
+        branches = result.get("ranked_branches", [])
+        if branches:
+            lines.extend(["", "## Top Ranked Branches", ""])
+            for index, branch in enumerate(branches[:top], start=1):
+                lines.append(
+                    f"{index}. `{branch['block']}` score={branch['score']} "
+                    f"succ={branch['successor_count']} new_vs_baseline={branch['new_successors_vs_baseline']}"
+                )
+        return "\n".join(lines) + "\n"
+
     branches = result.get("ranked_branches", [])
     if branches:
         lines.extend(["", "## Ranked Branches", ""])
-        for index, branch in enumerate(branches[:30], start=1):
+        for index, branch in enumerate(branches[:top], start=1):
             why = "; ".join(branch.get("why", [])) or "path evidence changed"
             lines.append(
                 f"{index}. `{branch['block']}` score={branch['score']} "
@@ -469,14 +561,15 @@ def branch_rank_to_markdown(result: dict[str, Any]) -> str:
                 f"hit_spread={branch['hit_spread']}"
             )
             lines.append(f"   - Why: {why}")
+            hl = _hit_label(result)
             hits = ", ".join(f"{label}={hits}" for label, hits in branch.get("hits_by_trace", {}).items())
             if hits:
-                lines.append(f"   - Hits: {hits}")
+                lines.append(f"   - {hl.capitalize()}: {hits}")
             for edge in branch.get("outgoing_edges", [])[:6]:
                 baseline = "baseline" if edge.get("baseline_edge") else "new"
                 lines.append(f"   - -> `{edge['to']}` {baseline} covered_by={edge['coverage_ratio']} traces={edge['covered_by']}")
-        if len(branches) > 30:
-            lines.append(f"... {len(branches) - 30} more ranked branches")
+        if len(branches) > top:
+            lines.append(f"... {len(branches) - top} more ranked branches (use --top to show more)")
 
     lines.extend(["", "## AI Interpretation", ""])
     for item in ai.get("how_to_use", []):
@@ -488,11 +581,23 @@ def branch_rank_to_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def flow_diff_to_markdown(result: dict[str, Any]) -> str:
+def flow_diff_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
     summary = result["summary"]
     ai = result["ai_report"]
+    only_left = summary.get('only_left_blocks', 0)
+    only_right = summary.get('only_right_blocks', 0)
+    left_label = summary.get('left_label', 'left')
+    right_label = summary.get('right_label', 'right')
+    diff_summary = f"Diff: {right_label} has {only_right} unique blocks, {left_label} has {only_left} unique blocks."
+    if only_right > 0:
+        focus_fn = summary.get('focus_function') or ''
+        diff_summary += f" Focus on {right_label}-only blocks to understand the different execution path."
+        if focus_fn:
+            diff_summary += f" (focus: {focus_fn})"
     lines = [
         "# BeaconFlow Flow Diff",
+        "",
+        f"> **{diff_summary}**",
         "",
     ]
     lines.extend(_ai_digest_lines(result))
@@ -502,8 +607,8 @@ def flow_diff_to_markdown(result: dict[str, Any]) -> str:
         f"- Focus function: {summary.get('focus_function') or '<none>'}",
         f"- Left unique blocks: {summary['left_unique_blocks']}",
         f"- Right unique blocks: {summary['right_unique_blocks']}",
-        f"- Only-left blocks: {summary['only_left_blocks']}",
-        f"- Only-right blocks: {summary['only_right_blocks']}",
+        f"- Only-left blocks: {only_left}",
+        f"- Only-right blocks: {only_right}",
         f"- Only-left edges: {summary['only_left_edges']}",
         f"- Only-right edges: {summary['only_right_edges']}",
         f"- Hit-count deltas: {summary.get('hit_count_deltas', 0)}",
@@ -513,6 +618,19 @@ def flow_diff_to_markdown(result: dict[str, Any]) -> str:
     ])
     for item in ai.get("how_to_use", []):
         lines.append(f"- {item}")
+
+    if brief:
+        only_right_ranges = ai.get("user_only_right_block_ranges", [])
+        if only_right_ranges:
+            lines.extend(["", "## Only-Right Block Ranges (Top 5)", ""])
+            for item in only_right_ranges[:5]:
+                lines.append(f"- `{item['function']}:{item['start']}-{item['end']}` blocks={item['blocks']}")
+        only_left_ranges = ai.get("user_only_left_block_ranges", [])
+        if only_left_ranges:
+            lines.extend(["", "## Only-Left Block Ranges (Top 5)", ""])
+            for item in only_left_ranges[:5]:
+                lines.append(f"- `{item['function']}:{item['start']}-{item['end']}` blocks={item['blocks']}")
+        return "\n".join(lines) + "\n"
 
     lines.extend(["", "## User Only-Right Block Ranges", ""])
     for item in ai.get("user_only_right_block_ranges", []):

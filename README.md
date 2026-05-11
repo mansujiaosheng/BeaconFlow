@@ -492,7 +492,7 @@ python -m beaconflow.cli deflatten-merge `
 
 - `--coverage`：两个或多个 drcov 日志文件（不同输入产生的）
 - `--address-log`：两个或多个 QEMU 地址日志文件
-- `--label`：为每个覆盖率文件指定标签（按顺序对应），可重复
+- `--label`：为每个覆盖率文件指定标签（按顺序对应），支持空格分隔或重复指定：`--label A B C` 或 `--label A --label B --label C`
 - 其他参数与 `deflatten` 相同
 
 `deflatten-merge` 的 Markdown 报告包含：
