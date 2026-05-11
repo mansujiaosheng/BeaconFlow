@@ -10,6 +10,7 @@ from beaconflow.analysis import analyze_coverage, analyze_decision_points, analy
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
+from beaconflow.doctor import doctor_to_markdown, run_doctor
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
@@ -398,6 +399,17 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
             },
             "required": ["metadata_path"],
+        },
+    },
+    "doctor": {
+        "description": "Check BeaconFlow environment and dependencies. Verifies Python version, beaconflow import, IDA/Ghidra availability, DynamoRIO drrun, QEMU user-mode, WSL, MCP, and PyYAML.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "qemu_arch": {"type": "string", "description": "Check specific QEMU arch (e.g. loongarch64, mips, arm)."},
+                "target_path": {"type": "string", "description": "Check if a target binary file exists."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
         },
     },
 }
@@ -987,6 +999,15 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         )
         if arguments.get("format") == "markdown":
             return _tool_result(trace_compare_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "doctor":
+        result = run_doctor(
+            qemu_arch=arguments.get("qemu_arch"),
+            target=arguments.get("target_path"),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(doctor_to_markdown(result))
         return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")

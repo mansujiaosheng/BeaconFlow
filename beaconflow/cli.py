@@ -10,6 +10,7 @@ from beaconflow.analysis import analyze_coverage, analyze_decision_points, analy
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
+from beaconflow.doctor import doctor_to_markdown, run_doctor
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
@@ -33,6 +34,19 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
         print(text)
+    return 0
+
+
+def _cmd_doctor(args: argparse.Namespace) -> int:
+    result = run_doctor(
+        qemu_arch=getattr(args, "qemu_arch", None),
+        target=getattr(args, "target", None),
+    )
+    if args.format == "markdown":
+        text = doctor_to_markdown(result)
+    else:
+        text = json.dumps(result, indent=2)
+    print(text)
     return 0
 
 
@@ -1319,6 +1333,12 @@ def build_parser() -> argparse.ArgumentParser:
     trace_compare.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     trace_compare.add_argument("--output")
     trace_compare.set_defaults(func=_cmd_trace_compare)
+
+    doctor = sub.add_parser("doctor", help="Check BeaconFlow environment and dependencies.")
+    doctor.add_argument("--qemu-arch", help="Check specific QEMU arch (e.g. loongarch64, mips, arm).")
+    doctor.add_argument("--target", help="Check if a target binary file exists.")
+    doctor.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    doctor.set_defaults(func=_cmd_doctor)
 
     ai_summary = sub.add_parser("ai-summary", help="Compact an existing BeaconFlow JSON report into an AI-first digest.")
     ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")
