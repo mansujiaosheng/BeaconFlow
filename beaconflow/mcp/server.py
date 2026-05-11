@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, normalize_to_ir, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -445,6 +445,19 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
                 "function_name": {"type": "string", "description": "Function name to decompile."},
+                "function_address": {"type": "string", "description": "Function start address (e.g. 0x401000)."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+            "required": ["metadata_path"],
+        },
+    },
+    "normalize_ir": {
+        "description": "Convert function instructions to normalized IR (architecture-independent). Supports x86/x64, ARM/AArch64, MIPS, LoongArch, and RISC-V. Outputs ASSIGN/LOAD/STORE/COMPARE/BRANCH/CALL/RETURN/BINARY operations.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
+                "function_name": {"type": "string", "description": "Function name to convert."},
                 "function_address": {"type": "string", "description": "Function start address (e.g. 0x401000)."},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
             },
@@ -1094,6 +1107,24 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         )
         if arguments.get("format") == "markdown":
             return _tool_result(decompile_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "normalize_ir":
+        metadata = load_metadata(arguments["metadata_path"])
+        func_address = None
+        if arguments.get("function_address"):
+            addr_str = arguments["function_address"]
+            try:
+                func_address = int(addr_str, 16) if addr_str.startswith("0x") else int(addr_str)
+            except ValueError:
+                pass
+        result = normalize_to_ir(
+            metadata,
+            function_name=arguments.get("function_name"),
+            function_address=func_address,
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(ir_to_markdown(result))
         return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")
