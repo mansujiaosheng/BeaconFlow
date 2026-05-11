@@ -159,6 +159,7 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `doctor` | Check BeaconFlow environment and dependencies. Verifies Python, beaconflow, IDA, Ghidra, DynamoRIO drrun, QEMU, WSL, MCP, and PyYAML. |
 | `input_taint` | Lightweight taint analysis: trace input bytes to branch decisions. Identifies input sources, compare sinks, and register propagation paths. |
 | `feedback_explore` | Generate input modification plan based on failed compare results. Uses trace_compare to identify failed comparisons, then suggests byte-level patches. Supports multi-round exploration strategy. |
+| `decompile_function` | Generate pseudo-code summary for a function from metadata. Produces block-level pseudo-code with branch conditions, calls, and loop detection. |
 
 ## Key Parameters
 

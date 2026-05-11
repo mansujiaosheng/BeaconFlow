@@ -6,7 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -80,6 +80,30 @@ def _cmd_feedback_explore(args: argparse.Namespace) -> int:
         input_offset_base=args.input_offset_base or 0,
     )
     text = _fmt_markdown(args.format, feedback_explore_to_markdown, result)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_decompile_function(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    func_address = None
+    if args.address:
+        try:
+            func_address = int(args.address, 16) if args.address.startswith("0x") else int(args.address)
+        except ValueError:
+            pass
+    result = decompile_function(
+        metadata,
+        function_name=args.name,
+        function_address=func_address,
+    )
+    if args.format == "markdown":
+        text = decompile_to_markdown(result)
+    else:
+        text = json.dumps(result, indent=2)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -1392,6 +1416,14 @@ def build_parser() -> argparse.ArgumentParser:
     feedback_explore.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     feedback_explore.add_argument("--output")
     feedback_explore.set_defaults(func=_cmd_feedback_explore)
+
+    decompile_func = sub.add_parser("decompile-function", help="Generate pseudo-code summary for a function from metadata.")
+    decompile_func.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    decompile_func.add_argument("--name", help="Function name to decompile.")
+    decompile_func.add_argument("--address", help="Function start address to decompile (e.g. 0x401000).")
+    decompile_func.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    decompile_func.add_argument("--output")
+    decompile_func.set_defaults(func=_cmd_decompile_function)
 
     ai_summary = sub.add_parser("ai-summary", help="Compact an existing BeaconFlow JSON report into an AI-first digest.")
     ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")
