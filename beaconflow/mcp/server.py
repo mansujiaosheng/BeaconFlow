@@ -21,6 +21,8 @@ from beaconflow.runtime.trace_calls import trace_calls, trace_calls_to_markdown
 from beaconflow.runtime.trace_compare import trace_compare, trace_compare_to_markdown
 from beaconflow.analysis.auto_explore import auto_explore_loop, auto_explore_to_markdown
 from beaconflow.analysis.input_impact import input_impact, input_impact_to_markdown
+from beaconflow.analysis.decision_points import find_decision_points
+from beaconflow.analysis.role_detector import analyze_roles
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -1504,6 +1506,146 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     raise ValueError(f"unknown tool: {name}")
 
 
+RESOURCES: list[dict[str, Any]] = [
+    {
+        "uri": "beaconflow://cases/current/manifest",
+        "name": "Current Case Manifest",
+        "description": "The manifest.json of the current case workspace, containing target info, runs, reports, and notes.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "beaconflow://cases/current/summary",
+        "name": "Current Case Summary",
+        "description": "Markdown summary of the current case workspace status.",
+        "mimeType": "text/markdown",
+    },
+    {
+        "uri": "beaconflow://runs/latest",
+        "name": "Latest Run",
+        "description": "The most recent run record from the case workspace.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "beaconflow://reports/latest",
+        "name": "Latest Report",
+        "description": "The most recent analysis report from the case workspace.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "beaconflow://metadata/functions",
+        "name": "Metadata Functions Index",
+        "description": "List of all functions in the current metadata, with names and addresses.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "beaconflow://metadata/decision-points",
+        "name": "Decision Points",
+        "description": "All decision points (cmp/test/jcc) found in the current metadata.",
+        "mimeType": "application/json",
+    },
+    {
+        "uri": "beaconflow://metadata/roles",
+        "name": "Function Roles",
+        "description": "Detected roles (validator, crypto, dispatcher, etc.) for all functions in the current metadata.",
+        "mimeType": "application/json",
+    },
+]
+
+
+def _read_resource(uri: str) -> str:
+    """读取指定 URI 的资源内容。"""
+    if uri == "beaconflow://cases/current/manifest":
+        manifest = load_manifest()
+        if manifest is None:
+            return json.dumps({"error": "No case workspace found. Run init-case first."}, indent=2)
+        return json.dumps(manifest, indent=2, ensure_ascii=False)
+
+    if uri == "beaconflow://cases/current/summary":
+        summary = summarize_case()
+        return case_to_markdown(summary)
+
+    if uri == "beaconflow://runs/latest":
+        runs_result = list_runs()
+        runs = runs_result.get("runs", [])
+        if not runs:
+            return json.dumps({"message": "No runs recorded yet."}, indent=2)
+        return json.dumps(runs[-1], indent=2, ensure_ascii=False)
+
+    if uri == "beaconflow://reports/latest":
+        reports_result = list_reports()
+        reports = reports_result.get("reports", [])
+        if not reports:
+            return json.dumps({"message": "No reports generated yet."}, indent=2)
+        return json.dumps(reports[-1], indent=2, ensure_ascii=False)
+
+    if uri == "beaconflow://metadata/functions":
+        manifest = load_manifest()
+        if manifest is None:
+            return json.dumps({"error": "No case workspace found."}, indent=2)
+        meta_info = manifest.get("metadata", {})
+        if not meta_info:
+            return json.dumps({"error": "No metadata registered in case workspace."}, indent=2)
+        first_meta = list(meta_info.values())[0] if meta_info else None
+        if not first_meta:
+            return json.dumps({"error": "No metadata entries."}, indent=2)
+        rel_path = first_meta.get("path", "")
+        case_dir = Path.cwd() / ".case"
+        meta_path = case_dir / rel_path
+        if not meta_path.exists():
+            return json.dumps({"error": f"Metadata file not found: {rel_path}"}, indent=2)
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            functions = [
+                {"name": f.get("name", ""), "start": f.get("start", ""), "end": f.get("end", "")}
+                for f in metadata.get("functions", [])
+            ]
+            return json.dumps({"total": len(functions), "functions": functions}, indent=2, ensure_ascii=False)
+        except (json.JSONDecodeError, OSError) as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    if uri == "beaconflow://metadata/decision-points":
+        manifest = load_manifest()
+        if manifest is None:
+            return json.dumps({"error": "No case workspace found."}, indent=2)
+        meta_info = manifest.get("metadata", {})
+        if not meta_info:
+            return json.dumps({"error": "No metadata registered."}, indent=2)
+        first_meta = list(meta_info.values())[0]
+        rel_path = first_meta.get("path", "")
+        case_dir = Path.cwd() / ".case"
+        meta_path = case_dir / rel_path
+        if not meta_path.exists():
+            return json.dumps({"error": f"Metadata file not found: {rel_path}"}, indent=2)
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            result = find_decision_points(metadata)
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    if uri == "beaconflow://metadata/roles":
+        manifest = load_manifest()
+        if manifest is None:
+            return json.dumps({"error": "No case workspace found."}, indent=2)
+        meta_info = manifest.get("metadata", {})
+        if not meta_info:
+            return json.dumps({"error": "No metadata registered."}, indent=2)
+        first_meta = list(meta_info.values())[0]
+        rel_path = first_meta.get("path", "")
+        case_dir = Path.cwd() / ".case"
+        meta_path = case_dir / rel_path
+        if not meta_path.exists():
+            return json.dumps({"error": f"Metadata file not found: {rel_path}"}, indent=2)
+        try:
+            metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+            result = analyze_roles(metadata)
+            return json.dumps(result, indent=2, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, indent=2)
+
+    return json.dumps({"error": f"Unknown resource URI: {uri}"}, indent=2)
+
+
 async def _stdio_loop() -> None:
     while True:
         line = await asyncio.to_thread(sys.stdin.readline)
@@ -1517,7 +1659,7 @@ async def _stdio_loop() -> None:
             if method == "initialize":
                 response["result"] = {
                     "protocolVersion": "2024-11-05",
-                    "capabilities": {"tools": {}},
+                    "capabilities": {"tools": {}, "resources": {}},
                     "serverInfo": {"name": "beaconflow", "version": "0.1.0"},
                 }
             elif method == "notifications/initialized":
@@ -1531,6 +1673,27 @@ async def _stdio_loop() -> None:
                 }
             elif method == "tools/call":
                 response["result"] = _call_tool(params["name"], params.get("arguments") or {})
+            elif method == "resources/list":
+                response["result"] = {
+                    "resources": RESOURCES,
+                }
+            elif method == "resources/read":
+                uri = params.get("uri", "")
+                content = _read_resource(uri)
+                mime = "application/json"
+                for r in RESOURCES:
+                    if r["uri"] == uri:
+                        mime = r.get("mimeType", "application/json")
+                        break
+                response["result"] = {
+                    "contents": [
+                        {
+                            "uri": uri,
+                            "mimeType": mime,
+                            "text": content,
+                        }
+                    ]
+                }
             else:
                 response["error"] = {"code": -32601, "message": f"method not found: {method}"}
         except Exception as exc:
