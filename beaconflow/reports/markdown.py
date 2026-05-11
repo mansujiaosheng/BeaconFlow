@@ -10,6 +10,23 @@ def _hit_label(result: dict[str, Any]) -> str:
     return "hits"
 
 
+def _append_block_context(lines: list[str], item: dict[str, Any], key: str = "block_context") -> None:
+    ctx = item.get(key)
+    if not isinstance(ctx, dict):
+        return
+    parts = []
+    if ctx.get("instructions"):
+        parts.append(f"insn: {', '.join(ctx['instructions'][:5])}")
+    if ctx.get("calls"):
+        parts.append(f"calls: {', '.join(ctx['calls'][:3])}")
+    if ctx.get("strings"):
+        parts.append(f"str: {', '.join(repr(s) for s in ctx['strings'][:3])}")
+    if ctx.get("constants"):
+        parts.append(f"const: {', '.join(str(c) for c in ctx['constants'][:5])}")
+    if parts:
+        lines.append(f"  - {' | '.join(parts)}")
+
+
 def _ai_digest_lines(result: dict[str, Any]) -> list[str]:
     digest = result.get("ai_digest")
     if not digest:
@@ -108,6 +125,7 @@ def deflatten_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
             for item in branch_points[:5]:
                 succs = ", ".join(f"`{s}`" for s in item["successors"])
                 lines.append(f"- `{item['block']}` -> {succs}")
+                _append_block_context(lines, item)
         return "\n".join(lines) + "\n"
 
     warnings = result.get("warnings", [])
@@ -232,6 +250,7 @@ def flow_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
             lines.extend(["", "## Branch Points (Top 5)", ""])
             for item in branch_pts[:5]:
                 lines.append(f"- `{item['block']}` -> {', '.join(f'`{x}`' for x in item['observed_successors'])}")
+                _append_block_context(lines, item)
         return "\n".join(lines) + "\n"
 
     lines.extend(["", "## User Function Order", "", ai.get("user_function_order_text", "<none>"), ""])
@@ -257,19 +276,23 @@ def flow_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
             f"- `{item['block']}` score={item['score']} hits={item['hits']} "
             f"pred={item['observed_predecessors']} succ={item['observed_successors']}"
         )
+        _append_block_context(lines, item)
 
     lines.extend(["", "## User Branch Points", ""])
     for item in ai.get("user_branch_points", []):
         lines.append(f"- `{item['block']}` -> {', '.join(f'`{x}`' for x in item['observed_successors'])}")
+        _append_block_context(lines, item)
 
     lines.extend(["", "## User Join Points", ""])
     for item in ai.get("user_join_points", []):
         lines.append(f"- `{item['block']}` <- {', '.join(f'`{x}`' for x in item['observed_predecessors'])}")
+        _append_block_context(lines, item)
 
     lines.extend(["", "## User Loop-Like Edges", ""])
     hl = _hit_label(result)
     for item in ai.get("user_loop_like_edges", []):
         lines.append(f"- `{item['from']}` -> `{item['to']}` {hl}={item['hits']}")
+        _append_block_context(lines, item, key="from")
 
     lines.extend(["", "## Next Steps", ""])
     for item in ai.get("next_steps", []):

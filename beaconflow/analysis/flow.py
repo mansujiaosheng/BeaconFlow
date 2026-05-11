@@ -21,7 +21,7 @@ class MappedBlock:
         return (self.function.name if self.function else "<unknown>", self.block.start if self.block else self.address)
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        result = {
             "event_index": self.event_index,
             "address": hex_addr(self.address),
             "size": self.size,
@@ -30,6 +30,9 @@ class MappedBlock:
             "block_start": hex_addr(self.block.start) if self.block else None,
             "block_end": hex_addr(self.block.end) if self.block else None,
         }
+        if self.block and self.block.context.to_json():
+            result["block_context"] = self.block.context.to_json()
+        return result
 
 
 def _static_address(metadata: ProgramMetadata, coverage: CoverageData, block: CoverageBlock) -> int | None:
@@ -87,6 +90,36 @@ def _transition_key(left: MappedBlock, right: MappedBlock) -> tuple[tuple[str, i
 
 def _format_key(key: tuple[str, int]) -> str:
     return f"{key[0]}:{hex_addr(key[1])}"
+
+
+def _find_block_context(compressed: list[MappedBlock], key: tuple[str, int]) -> dict[str, Any] | None:
+    for event in compressed:
+        if event.key == key and event.block:
+            ctx = event.block.context.to_json()
+            if ctx:
+                return ctx
+    return None
+
+
+def _enrich_with_context(items: list[dict[str, Any]], compressed: list[MappedBlock], key_field: str = "block") -> list[dict[str, Any]]:
+    for item in items:
+        key_str = item.get(key_field, "")
+        key = _parse_format_key(key_str)
+        if key:
+            ctx = _find_block_context(compressed, key)
+            if ctx:
+                item["block_context"] = ctx
+    return items
+
+
+def _parse_format_key(formatted: str) -> tuple[str, int] | None:
+    if ":" not in formatted:
+        return None
+    name, addr_str = formatted.rsplit(":", 1)
+    try:
+        return (name, int(addr_str, 16))
+    except (ValueError, TypeError):
+        return None
 
 
 def _formatted_function_name(value: str) -> str:
@@ -320,6 +353,11 @@ def _build_ai_report(
     user_branch_points = [item for item in branch_points if not _is_runtime_function(_formatted_function_name(item["block"]))][:20]
     user_join_points = [item for item in join_points if not _is_runtime_function(_formatted_function_name(item["block"]))][:20]
     user_loop_like_edges = [item for item in loop_like_edges if not _is_runtime_function(_formatted_function_name(item["from"]))][:20]
+
+    _enrich_with_context(user_branch_points, compressed, "block")
+    _enrich_with_context(user_dispatcher_candidates, compressed, "block")
+    _enrich_with_context(user_join_points, compressed, "block")
+    _enrich_with_context(user_loop_like_edges, compressed, "from")
 
     spine_keys: list[tuple[str, int]] = []
     previous: tuple[str, int] | None = None
