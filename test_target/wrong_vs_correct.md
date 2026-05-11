@@ -1,0 +1,361 @@
+# BeaconFlow Flow Diff
+
+## Summary
+
+- Focus function: <none>
+- Left unique blocks: 5261
+- Right unique blocks: 5424
+- Only-left blocks: 40
+- Only-right blocks: 203
+- Only-left edges: 53
+- Only-right edges: 219
+- Hit-count deltas: 6
+
+## AI Guidance
+
+- Start with user_only_right_blocks/edges to see what the right run uniquely reached.
+- Use user_only_left_blocks/edges to identify failure or alternate-path logic.
+- If focus_function is null and CRT noise dominates, rerun with --focus-function _main or a checker function.
+
+## User Only-Right Block Ranges
+
+- `trace_001_222204:0x222204-0x222228` blocks=9
+- `trace_004_226b60:0x226bd0-0x226c10` blocks=16
+- `trace_005_22e2a0:0x22e4e8-0x22e50c` blocks=9
+- `trace_005_22e2a0:0x22e944-0x22e950` blocks=3
+- `trace_005_22e2a0:0x22ef28-0x22ef68` blocks=16
+- `trace_005_22e2a0:0x22efb0-0x22f000` blocks=20
+- `trace_005_22e2a0:0x22f028-0x22f044` blocks=7
+- `trace_005_22e2a0:0x22f06c-0x22f08c` blocks=8
+- `trace_005_22e2a0:0x22f0b4-0x22f0d4` blocks=8
+- `trace_005_22e2a0:0x22f0fc-0x22f11c` blocks=8
+- `trace_005_22e2a0:0x22f144-0x22f16c` blocks=10
+- `trace_005_22e2a0:0x22f1a0-0x22f1bc` blocks=7
+- `trace_005_22e2a0:0x22f1e4-0x22f204` blocks=8
+- `trace_005_22e2a0:0x22f22c-0x22f254` blocks=10
+- `trace_005_22e2a0:0x22f27c-0x22f29c` blocks=8
+- `trace_005_22e2a0:0x22f2c4-0x22f2e4` blocks=8
+- `trace_005_22e2a0:0x22f30c-0x22f324` blocks=6
+- `trace_005_22e2a0:0x22f338-0x22f394` blocks=23
+- `trace_005_22e2a0:0x22f3a0-0x22f3c8` blocks=10
+- `trace_006_2430d0:0x24349c-0x2434c0` blocks=9
+
+## User Only-Left Block Ranges
+
+- `trace_004_226b60:0x227134-0x227178` blocks=17
+- `trace_005_22e2a0:0x22e320-0x22e344` blocks=9
+- `trace_005_22e2a0:0x22ef68-0x22efa0` blocks=14
+
+## User Only-Right Blocks
+
+- `trace_001_222204:0x222204`
+- `trace_001_222204:0x222208`
+- `trace_001_222204:0x22220c`
+- `trace_001_222204:0x222210`
+- `trace_001_222204:0x222214`
+- `trace_001_222204:0x222218`
+- `trace_001_222204:0x22221c`
+- `trace_001_222204:0x222220`
+- `trace_001_222204:0x222224`
+- `trace_004_226b60:0x226bd0`
+- `trace_004_226b60:0x226bd4`
+- `trace_004_226b60:0x226bd8`
+- `trace_004_226b60:0x226bdc`
+- `trace_004_226b60:0x226be0`
+- `trace_004_226b60:0x226be4`
+- `trace_004_226b60:0x226be8`
+- `trace_004_226b60:0x226bec`
+- `trace_004_226b60:0x226bf0`
+- `trace_004_226b60:0x226bf4`
+- `trace_004_226b60:0x226bf8`
+- `trace_004_226b60:0x226bfc`
+- `trace_004_226b60:0x226c00`
+- `trace_004_226b60:0x226c04`
+- `trace_004_226b60:0x226c08`
+- `trace_004_226b60:0x226c0c`
+- `trace_005_22e2a0:0x22e4e8`
+- `trace_005_22e2a0:0x22e4ec`
+- `trace_005_22e2a0:0x22e4f0`
+- `trace_005_22e2a0:0x22e4f4`
+- `trace_005_22e2a0:0x22e4f8`
+- `trace_005_22e2a0:0x22e4fc`
+- `trace_005_22e2a0:0x22e500`
+- `trace_005_22e2a0:0x22e504`
+- `trace_005_22e2a0:0x22e508`
+- `trace_005_22e2a0:0x22e944`
+- `trace_005_22e2a0:0x22e948`
+- `trace_005_22e2a0:0x22e94c`
+- `trace_005_22e2a0:0x22ef28`
+- `trace_005_22e2a0:0x22ef2c`
+- `trace_005_22e2a0:0x22ef30`
+- `trace_005_22e2a0:0x22ef34`
+- `trace_005_22e2a0:0x22ef38`
+- `trace_005_22e2a0:0x22ef3c`
+- `trace_005_22e2a0:0x22ef40`
+- `trace_005_22e2a0:0x22ef44`
+- `trace_005_22e2a0:0x22ef48`
+- `trace_005_22e2a0:0x22ef4c`
+- `trace_005_22e2a0:0x22ef50`
+- `trace_005_22e2a0:0x22ef54`
+- `trace_005_22e2a0:0x22ef58`
+- `trace_005_22e2a0:0x22ef5c`
+- `trace_005_22e2a0:0x22ef60`
+- `trace_005_22e2a0:0x22ef64`
+- `trace_005_22e2a0:0x22efb0`
+- `trace_005_22e2a0:0x22efb4`
+- `trace_005_22e2a0:0x22efb8`
+- `trace_005_22e2a0:0x22efbc`
+- `trace_005_22e2a0:0x22efc0`
+- `trace_005_22e2a0:0x22efc4`
+- `trace_005_22e2a0:0x22efc8`
+- `trace_005_22e2a0:0x22efcc`
+- `trace_005_22e2a0:0x22efd0`
+- `trace_005_22e2a0:0x22efd4`
+- `trace_005_22e2a0:0x22efd8`
+- `trace_005_22e2a0:0x22efdc`
+- `trace_005_22e2a0:0x22efe0`
+- `trace_005_22e2a0:0x22efe4`
+- `trace_005_22e2a0:0x22efe8`
+- `trace_005_22e2a0:0x22efec`
+- `trace_005_22e2a0:0x22eff0`
+- `trace_005_22e2a0:0x22eff4`
+- `trace_005_22e2a0:0x22eff8`
+- `trace_005_22e2a0:0x22effc`
+- `trace_005_22e2a0:0x22f028`
+- `trace_005_22e2a0:0x22f02c`
+- `trace_005_22e2a0:0x22f030`
+- `trace_005_22e2a0:0x22f034`
+- `trace_005_22e2a0:0x22f038`
+- `trace_005_22e2a0:0x22f03c`
+- `trace_005_22e2a0:0x22f040`
+- `trace_005_22e2a0:0x22f06c`
+- `trace_005_22e2a0:0x22f070`
+- `trace_005_22e2a0:0x22f074`
+- `trace_005_22e2a0:0x22f078`
+- `trace_005_22e2a0:0x22f07c`
+- `trace_005_22e2a0:0x22f080`
+- `trace_005_22e2a0:0x22f084`
+- `trace_005_22e2a0:0x22f088`
+- `trace_005_22e2a0:0x22f0b4`
+- `trace_005_22e2a0:0x22f0b8`
+- `trace_005_22e2a0:0x22f0bc`
+- `trace_005_22e2a0:0x22f0c0`
+- `trace_005_22e2a0:0x22f0c4`
+- `trace_005_22e2a0:0x22f0c8`
+- `trace_005_22e2a0:0x22f0cc`
+- `trace_005_22e2a0:0x22f0d0`
+- `trace_005_22e2a0:0x22f0fc`
+- `trace_005_22e2a0:0x22f100`
+- `trace_005_22e2a0:0x22f104`
+- `trace_005_22e2a0:0x22f108`
+
+## User Only-Left Blocks
+
+- `trace_004_226b60:0x227134`
+- `trace_004_226b60:0x227138`
+- `trace_004_226b60:0x22713c`
+- `trace_004_226b60:0x227140`
+- `trace_004_226b60:0x227144`
+- `trace_004_226b60:0x227148`
+- `trace_004_226b60:0x22714c`
+- `trace_004_226b60:0x227150`
+- `trace_004_226b60:0x227154`
+- `trace_004_226b60:0x227158`
+- `trace_004_226b60:0x22715c`
+- `trace_004_226b60:0x227160`
+- `trace_004_226b60:0x227164`
+- `trace_004_226b60:0x227168`
+- `trace_004_226b60:0x22716c`
+- `trace_004_226b60:0x227170`
+- `trace_004_226b60:0x227174`
+- `trace_005_22e2a0:0x22e320`
+- `trace_005_22e2a0:0x22e324`
+- `trace_005_22e2a0:0x22e328`
+- `trace_005_22e2a0:0x22e32c`
+- `trace_005_22e2a0:0x22e330`
+- `trace_005_22e2a0:0x22e334`
+- `trace_005_22e2a0:0x22e338`
+- `trace_005_22e2a0:0x22e33c`
+- `trace_005_22e2a0:0x22e340`
+- `trace_005_22e2a0:0x22ef68`
+- `trace_005_22e2a0:0x22ef6c`
+- `trace_005_22e2a0:0x22ef70`
+- `trace_005_22e2a0:0x22ef74`
+- `trace_005_22e2a0:0x22ef78`
+- `trace_005_22e2a0:0x22ef7c`
+- `trace_005_22e2a0:0x22ef80`
+- `trace_005_22e2a0:0x22ef84`
+- `trace_005_22e2a0:0x22ef88`
+- `trace_005_22e2a0:0x22ef8c`
+- `trace_005_22e2a0:0x22ef90`
+- `trace_005_22e2a0:0x22ef94`
+- `trace_005_22e2a0:0x22ef98`
+- `trace_005_22e2a0:0x22ef9c`
+
+## User Only-Right Edges
+
+- `trace_000_220000:0x22131c` -> `trace_001_222204:0x222204`
+- `trace_001_222204:0x222204` -> `trace_001_222204:0x222208`
+- `trace_001_222204:0x222208` -> `trace_001_222204:0x22220c`
+- `trace_001_222204:0x22220c` -> `trace_001_222204:0x222210`
+- `trace_001_222204:0x222210` -> `trace_001_222204:0x222214`
+- `trace_001_222204:0x222214` -> `trace_001_222204:0x222218`
+- `trace_001_222204:0x222218` -> `trace_001_222204:0x22221c`
+- `trace_001_222204:0x22221c` -> `trace_001_222204:0x222220`
+- `trace_001_222204:0x222220` -> `trace_001_222204:0x222224`
+- `trace_001_222204:0x222224` -> `trace_000_220000:0x221320`
+- `trace_004_226b60:0x226bd0` -> `trace_004_226b60:0x226bd4`
+- `trace_004_226b60:0x226bd4` -> `trace_004_226b60:0x226bd8`
+- `trace_004_226b60:0x226bd8` -> `trace_004_226b60:0x226bdc`
+- `trace_004_226b60:0x226bdc` -> `trace_004_226b60:0x226be0`
+- `trace_004_226b60:0x226be0` -> `trace_004_226b60:0x226be4`
+- `trace_004_226b60:0x226be4` -> `trace_004_226b60:0x226be8`
+- `trace_004_226b60:0x226be8` -> `trace_004_226b60:0x226bec`
+- `trace_004_226b60:0x226bec` -> `trace_004_226b60:0x226bf0`
+- `trace_004_226b60:0x226bf0` -> `trace_004_226b60:0x226bf4`
+- `trace_004_226b60:0x226bf4` -> `trace_004_226b60:0x226bf8`
+- `trace_004_226b60:0x226bf8` -> `trace_004_226b60:0x226bfc`
+- `trace_004_226b60:0x226bfc` -> `trace_004_226b60:0x226c00`
+- `trace_004_226b60:0x226c00` -> `trace_004_226b60:0x226c04`
+- `trace_004_226b60:0x226c04` -> `trace_004_226b60:0x226c08`
+- `trace_004_226b60:0x226c08` -> `trace_004_226b60:0x226c0c`
+- `trace_004_226b60:0x226c0c` -> `trace_005_22e2a0:0x22f354`
+- `trace_004_226b60:0x2275e8` -> `trace_004_226b60:0x226d38`
+- `trace_004_226b60:0x227b38` -> `trace_004_226b60:0x227b3c`
+- `trace_004_226b60:0x227b70` -> `trace_005_22e2a0:0x22e910`
+- `trace_005_22e2a0:0x22e2a8` -> `trace_005_22e2a0:0x22e2ac`
+- `trace_005_22e2a0:0x22e358` -> `trace_005_22e2a0:0x22e4e8`
+- `trace_005_22e2a0:0x22e4e8` -> `trace_005_22e2a0:0x22e4ec`
+- `trace_005_22e2a0:0x22e4ec` -> `trace_005_22e2a0:0x22e4f0`
+- `trace_005_22e2a0:0x22e4f0` -> `trace_005_22e2a0:0x22e4f4`
+- `trace_005_22e2a0:0x22e4f4` -> `trace_005_22e2a0:0x22e4f8`
+- `trace_005_22e2a0:0x22e4f8` -> `trace_005_22e2a0:0x22e4fc`
+- `trace_005_22e2a0:0x22e4fc` -> `trace_005_22e2a0:0x22e500`
+- `trace_005_22e2a0:0x22e500` -> `trace_005_22e2a0:0x22e504`
+- `trace_005_22e2a0:0x22e504` -> `trace_005_22e2a0:0x22e508`
+- `trace_005_22e2a0:0x22e508` -> `trace_005_22e2a0:0x22e35c`
+- `trace_005_22e2a0:0x22e860` -> `trace_005_22e2a0:0x22e944`
+- `trace_005_22e2a0:0x22e918` -> `trace_005_22e2a0:0x22e85c`
+- `trace_005_22e2a0:0x22e940` -> `trace_005_22e2a0:0x22ea44`
+- `trace_005_22e2a0:0x22e944` -> `trace_005_22e2a0:0x22e948`
+- `trace_005_22e2a0:0x22e948` -> `trace_005_22e2a0:0x22e94c`
+- `trace_005_22e2a0:0x22e94c` -> `trace_004_226b60:0x227b74`
+- `trace_005_22e2a0:0x22e9bc` -> `trace_005_22e2a0:0x22e9c0`
+- `trace_005_22e2a0:0x22ea4c` -> `trace_005_22e2a0:0x22e864`
+- `trace_005_22e2a0:0x22ea4c` -> `trace_005_22e2a0:0x22ea44`
+- `trace_005_22e2a0:0x22ef24` -> `trace_005_22e2a0:0x22ef28`
+- `trace_005_22e2a0:0x22ef28` -> `trace_005_22e2a0:0x22ef2c`
+- `trace_005_22e2a0:0x22ef2c` -> `trace_005_22e2a0:0x22ef30`
+- `trace_005_22e2a0:0x22ef30` -> `trace_005_22e2a0:0x22ef34`
+- `trace_005_22e2a0:0x22ef34` -> `trace_005_22e2a0:0x22ef38`
+- `trace_005_22e2a0:0x22ef38` -> `trace_005_22e2a0:0x22ef3c`
+- `trace_005_22e2a0:0x22ef3c` -> `trace_005_22e2a0:0x22ef40`
+- `trace_005_22e2a0:0x22ef40` -> `trace_005_22e2a0:0x22ef44`
+- `trace_005_22e2a0:0x22ef44` -> `trace_005_22e2a0:0x22ef48`
+- `trace_005_22e2a0:0x22ef48` -> `trace_005_22e2a0:0x22ef4c`
+- `trace_005_22e2a0:0x22ef4c` -> `trace_005_22e2a0:0x22ef50`
+- `trace_005_22e2a0:0x22ef50` -> `trace_005_22e2a0:0x22ef54`
+- `trace_005_22e2a0:0x22ef54` -> `trace_005_22e2a0:0x22ef58`
+- `trace_005_22e2a0:0x22ef58` -> `trace_005_22e2a0:0x22ef5c`
+- `trace_005_22e2a0:0x22ef5c` -> `trace_005_22e2a0:0x22ef60`
+- `trace_005_22e2a0:0x22ef60` -> `trace_005_22e2a0:0x22ef64`
+- `trace_005_22e2a0:0x22ef64` -> `trace_005_22e2a0:0x22efc4`
+- `trace_005_22e2a0:0x22efb0` -> `trace_005_22e2a0:0x22efb4`
+- `trace_005_22e2a0:0x22efb4` -> `trace_005_22e2a0:0x22efb8`
+- `trace_005_22e2a0:0x22efb8` -> `trace_005_22e2a0:0x22efbc`
+- `trace_005_22e2a0:0x22efbc` -> `trace_005_22e2a0:0x22efc0`
+- `trace_005_22e2a0:0x22efc0` -> `trace_005_22e2a0:0x22efc4`
+- `trace_005_22e2a0:0x22efc4` -> `trace_005_22e2a0:0x22efc8`
+- `trace_005_22e2a0:0x22efc8` -> `trace_005_22e2a0:0x22efcc`
+- `trace_005_22e2a0:0x22efc8` -> `trace_005_22e2a0:0x22f1b4`
+- `trace_005_22e2a0:0x22efcc` -> `trace_005_22e2a0:0x22efd0`
+- `trace_005_22e2a0:0x22efd0` -> `trace_005_22e2a0:0x22efd4`
+- `trace_005_22e2a0:0x22efd4` -> `trace_005_22e2a0:0x22efd8`
+- `trace_005_22e2a0:0x22efd8` -> `trace_005_22e2a0:0x22efdc`
+- `trace_005_22e2a0:0x22efdc` -> `trace_005_22e2a0:0x22efe0`
+- `trace_005_22e2a0:0x22efe0` -> `trace_005_22e2a0:0x22efe4`
+- `trace_005_22e2a0:0x22efe4` -> `trace_005_22e2a0:0x22efe8`
+- `trace_005_22e2a0:0x22efe8` -> `trace_005_22e2a0:0x22efec`
+- `trace_005_22e2a0:0x22efec` -> `trace_005_22e2a0:0x22eff0`
+- `trace_005_22e2a0:0x22eff0` -> `trace_005_22e2a0:0x22eff4`
+- `trace_005_22e2a0:0x22eff4` -> `trace_005_22e2a0:0x22f0cc`
+- `trace_005_22e2a0:0x22eff8` -> `trace_005_22e2a0:0x22effc`
+- `trace_005_22e2a0:0x22effc` -> `trace_005_22e2a0:0x22f028`
+- `trace_005_22e2a0:0x22f028` -> `trace_005_22e2a0:0x22f02c`
+- `trace_005_22e2a0:0x22f02c` -> `trace_005_22e2a0:0x22f030`
+- `trace_005_22e2a0:0x22f030` -> `trace_005_22e2a0:0x22f034`
+- `trace_005_22e2a0:0x22f034` -> `trace_005_22e2a0:0x22f038`
+- `trace_005_22e2a0:0x22f038` -> `trace_005_22e2a0:0x22f084`
+- `trace_005_22e2a0:0x22f03c` -> `trace_005_22e2a0:0x22f040`
+- `trace_005_22e2a0:0x22f040` -> `trace_005_22e2a0:0x22f06c`
+- `trace_005_22e2a0:0x22f06c` -> `trace_005_22e2a0:0x22f070`
+- `trace_005_22e2a0:0x22f070` -> `trace_005_22e2a0:0x22f074`
+- `trace_005_22e2a0:0x22f074` -> `trace_005_22e2a0:0x22f078`
+- `trace_005_22e2a0:0x22f078` -> `trace_005_22e2a0:0x22f07c`
+- `trace_005_22e2a0:0x22f07c` -> `trace_005_22e2a0:0x22f080`
+- `trace_005_22e2a0:0x22f080` -> `trace_005_22e2a0:0x22f294`
+
+## User Only-Left Edges
+
+- `trace_000_220000:0x22131c` -> `trace_000_220000:0x221320`
+- `trace_004_226b60:0x227134` -> `trace_004_226b60:0x227138`
+- `trace_004_226b60:0x227138` -> `trace_004_226b60:0x22713c`
+- `trace_004_226b60:0x22713c` -> `trace_004_226b60:0x227140`
+- `trace_004_226b60:0x227140` -> `trace_004_226b60:0x227144`
+- `trace_004_226b60:0x227144` -> `trace_004_226b60:0x227148`
+- `trace_004_226b60:0x227148` -> `trace_004_226b60:0x22714c`
+- `trace_004_226b60:0x22714c` -> `trace_004_226b60:0x227150`
+- `trace_004_226b60:0x227150` -> `trace_004_226b60:0x227154`
+- `trace_004_226b60:0x227154` -> `trace_004_226b60:0x227158`
+- `trace_004_226b60:0x227158` -> `trace_004_226b60:0x22715c`
+- `trace_004_226b60:0x22715c` -> `trace_004_226b60:0x227160`
+- `trace_004_226b60:0x227160` -> `trace_004_226b60:0x227164`
+- `trace_004_226b60:0x227164` -> `trace_004_226b60:0x227168`
+- `trace_004_226b60:0x227168` -> `trace_004_226b60:0x22716c`
+- `trace_004_226b60:0x22716c` -> `trace_004_226b60:0x227170`
+- `trace_004_226b60:0x227170` -> `trace_004_226b60:0x227174`
+- `trace_004_226b60:0x227174` -> `trace_004_226b60:0x226d38`
+- `trace_004_226b60:0x2275e8` -> `trace_004_226b60:0x227134`
+- `trace_004_226b60:0x227b38` -> `trace_005_22e2a0:0x22e9c0`
+- `trace_004_226b60:0x227b70` -> `trace_004_226b60:0x227b3c`
+- `trace_004_226b60:0x227b70` -> `trace_004_226b60:0x227b74`
+- `trace_005_22e2a0:0x22e2a8` -> `trace_005_22e2a0:0x22e320`
+- `trace_005_22e2a0:0x22e320` -> `trace_005_22e2a0:0x22e324`
+- `trace_005_22e2a0:0x22e324` -> `trace_005_22e2a0:0x22e328`
+- `trace_005_22e2a0:0x22e328` -> `trace_005_22e2a0:0x22e32c`
+- `trace_005_22e2a0:0x22e32c` -> `trace_005_22e2a0:0x22e330`
+- `trace_005_22e2a0:0x22e330` -> `trace_005_22e2a0:0x22e334`
+- `trace_005_22e2a0:0x22e334` -> `trace_005_22e2a0:0x22e338`
+- `trace_005_22e2a0:0x22e338` -> `trace_005_22e2a0:0x22e33c`
+- `trace_005_22e2a0:0x22e33c` -> `trace_005_22e2a0:0x22e340`
+- `trace_005_22e2a0:0x22e340` -> `trace_005_22e2a0:0x22e2ac`
+- `trace_005_22e2a0:0x22e358` -> `trace_005_22e2a0:0x22e35c`
+- `trace_005_22e2a0:0x22e860` -> `trace_005_22e2a0:0x22e9c0`
+- `trace_005_22e2a0:0x22e940` -> `trace_005_22e2a0:0x22e864`
+- `trace_005_22e2a0:0x22e9bc` -> `trace_005_22e2a0:0x22e85c`
+- `trace_005_22e2a0:0x22e9e0` -> `trace_004_226b60:0x227b3c`
+- `trace_005_22e2a0:0x22ef24` -> `trace_005_22e2a0:0x22ef68`
+- `trace_005_22e2a0:0x22ef68` -> `trace_005_22e2a0:0x22ef6c`
+- `trace_005_22e2a0:0x22ef6c` -> `trace_005_22e2a0:0x22ef70`
+- `trace_005_22e2a0:0x22ef70` -> `trace_005_22e2a0:0x22ef74`
+- `trace_005_22e2a0:0x22ef74` -> `trace_005_22e2a0:0x22ef78`
+- `trace_005_22e2a0:0x22ef78` -> `trace_005_22e2a0:0x22ef7c`
+- `trace_005_22e2a0:0x22ef7c` -> `trace_005_22e2a0:0x22ef80`
+- `trace_005_22e2a0:0x22ef80` -> `trace_005_22e2a0:0x22ef84`
+- `trace_005_22e2a0:0x22ef84` -> `trace_005_22e2a0:0x22ef88`
+- `trace_005_22e2a0:0x22ef88` -> `trace_005_22e2a0:0x22ef8c`
+- `trace_005_22e2a0:0x22ef8c` -> `trace_005_22e2a0:0x22ef90`
+- `trace_005_22e2a0:0x22ef90` -> `trace_005_22e2a0:0x22ef94`
+- `trace_005_22e2a0:0x22ef94` -> `trace_005_22e2a0:0x22ef98`
+- `trace_005_22e2a0:0x22ef98` -> `trace_005_22e2a0:0x22ef9c`
+- `trace_005_22e2a0:0x22ef9c` -> `trace_005_22e2a0:0x22efa0`
+- `trace_006_2430d0:0x243698` -> `trace_003_224790:0x224790`
+
+## User Hit-Count Deltas
+
+- `trace_004_226b60:0x226d38` left=2 right=0 delta=-2
+- `trace_004_226b60:0x2275e4` left=2 right=0 delta=-2
+- `trace_004_226b60:0x2275e8` left=2 right=0 delta=-2
+- `trace_005_22e2a0:0x22ea44` left=0 right=4 delta=4
+- `trace_005_22e2a0:0x22ea48` left=0 right=4 delta=4
+- `trace_005_22e2a0:0x22ea4c` left=0 right=4 delta=4

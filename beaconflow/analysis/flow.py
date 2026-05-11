@@ -4,6 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Any
 
+from beaconflow.analysis.ai_digest import attach_ai_digest
 from beaconflow.models import BasicBlock, CoverageBlock, CoverageData, Function, ProgramMetadata, hex_addr, normalize_path_name
 
 
@@ -217,6 +218,20 @@ def _hot_counts(result: dict[str, Any]) -> dict[tuple[str, int], int]:
         (item["function"], int(item["block_start"], 16)): int(item["hits"])
         for item in result.get("hot_blocks", [])
     }
+
+
+def _coverage_trace_info(coverage: CoverageData) -> dict[str, str | None]:
+    return {
+        "source_kind": getattr(coverage, "source_kind", "unknown"),
+        "trace_mode": getattr(coverage, "trace_mode", None),
+        "hit_count_precision": getattr(coverage, "hit_count_precision", "unknown"),
+    }
+
+
+def _hit_count_warning(coverage: CoverageData) -> str | None:
+    if getattr(coverage, "hit_count_precision", None) == "translation-log":
+        return "QEMU in_asm logs translated blocks, not exact executions; use exec,nochain when hit counts, loop counts, dispatcher frequency, or timing/path oracles matter."
+    return None
 
 
 def _build_ai_report(
@@ -437,7 +452,7 @@ def analyze_flow(
     flow_limit = max_events if max_events and max_events > 0 else len(compressed)
     ai_report = _build_ai_report(compressed, transitions, hot_blocks, function_order, flow_limit)
 
-    return {
+    return attach_ai_digest("flow", {
         "summary": {
             "raw_target_events": len(mapped),
             "compressed_events": len(compressed),
@@ -446,12 +461,14 @@ def analyze_flow(
             "functions_seen": len(function_order),
             "truncated": flow_limit < len(compressed),
             "focus_function": focus_function,
+            **_coverage_trace_info(coverage),
         },
         "diagnostics": {
             "skipped_non_target_module_events": skipped_module_events,
             "unmapped_function_events": unmapped_function_events,
             "unmapped_basic_block_events": unmapped_block_events,
             "mapped_target_events": len(mapped),
+            "hit_count_warning": _hit_count_warning(coverage),
         },
         "ai_report": ai_report,
         "function_order": function_order,
@@ -468,7 +485,7 @@ def analyze_flow(
             }
             for (left, right), hits in transitions.most_common(100)
         ],
-    }
+    })
 
 
 def diff_flow(
@@ -514,7 +531,7 @@ def diff_flow(
         )
     user_hit_deltas = [item for item in hit_deltas if not _is_runtime_function(item["function"])]
 
-    return {
+    return attach_ai_digest("flow_diff", {
         "summary": {
             "focus_function": focus_function,
             "left_unique_blocks": len(left_blocks),
@@ -547,7 +564,7 @@ def diff_flow(
         "hit_count_deltas": hit_deltas[:200],
         "left_diagnostics": left_result["diagnostics"],
         "right_diagnostics": right_result["diagnostics"],
-    }
+    })
 
 
 def rank_input_branches(
@@ -602,6 +619,7 @@ def rank_input_branches(
                 "role": role,
                 "unique_blocks": len(set(event.key for event in mapped)),
                 "unique_transitions": len(flow_edges),
+                **_coverage_trace_info(coverage),
             }
         )
 
@@ -676,13 +694,15 @@ def rank_input_branches(
         )
 
     ranked.sort(key=lambda item: (-item["score"], item["block"]))
-    return {
+    return attach_ai_digest("branch_rank", {
         "summary": {
             "total_traces": len(coverages),
             "baseline": baseline_label,
             "ranked_branch_points": len(ranked),
             "focus_function": focus_function,
+            "hit_count_precision": ",".join(sorted(set(str(getattr(c, "hit_count_precision", "unknown")) for c in coverages))),
         },
+        "warnings": [w for w in sorted(set(filter(None, (_hit_count_warning(c) for c in coverages))))],
         "traces": trace_results,
         "ranked_branches": ranked[:100],
         "ai_interpretation": {
@@ -698,7 +718,7 @@ def rank_input_branches(
                 "Pair this report with disassembly to recover the actual comparison operands.",
             ],
         },
-    }
+    })
 
 
 def _identify_dispatchers(
@@ -707,6 +727,7 @@ def _identify_dispatchers(
     min_hits: int = 2,
     min_pred: int = 2,
     min_succ: int = 2,
+    mode: str = "strict",
 ) -> set[tuple[str, int]]:
     """识别平坦化中的 dispatcher 块。
 
@@ -718,19 +739,67 @@ def _identify_dispatchers(
         out_degree.setdefault(left.key, set()).add(right.key)
         in_degree.setdefault(right.key, set()).add(left.key)
 
-    dispatchers: set[tuple[str, int]] = set()
+    return {
+        item["key"]
+        for item in _dispatcher_candidate_details(compressed, hot_blocks, min_hits, min_pred, min_succ, mode)
+        if item["selected"]
+    }
+
+
+def _dispatcher_candidate_details(
+    compressed: list[MappedBlock],
+    hot_blocks: Counter[tuple[str, int]],
+    min_hits: int = 2,
+    min_pred: int = 2,
+    min_succ: int = 2,
+    mode: str = "strict",
+) -> list[dict[str, Any]]:
+    if mode not in {"strict", "balanced", "aggressive"}:
+        raise ValueError(f"unknown dispatcher mode: {mode}")
+    out_degree: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    in_degree: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    for left, right in zip(compressed, compressed[1:]):
+        out_degree.setdefault(left.key, set()).add(right.key)
+        in_degree.setdefault(right.key, set()).add(left.key)
+
+    details: list[dict[str, Any]] = []
     for key, hits in hot_blocks.items():
         pred_count = len(in_degree.get(key, ()))
         succ_count = len(out_degree.get(key, ()))
         score = hits + succ_count * 2 + pred_count
-        # dispatcher 判定：高频 + 多前驱或多后继
-        if hits >= min_hits and (pred_count >= min_pred or succ_count >= min_succ):
-            dispatchers.add(key)
-        # 或者 score 足够高（即使 pred/succ 不多，但频率极高也说明是 dispatcher）
-        elif score >= 10 and hits >= 3:
-            dispatchers.add(key)
-
-    return dispatchers
+        strong_shape = hits >= min_hits and pred_count >= min_pred and succ_count >= min_succ
+        weak_shape = hits >= min_hits and (pred_count >= min_pred or succ_count >= min_succ)
+        hot_only = score >= 10 and hits >= max(3, min_hits * 2)
+        if mode == "strict":
+            selected = strong_shape
+        elif mode == "balanced":
+            selected = strong_shape or (weak_shape and pred_count > 1 and succ_count > 1)
+        elif mode == "aggressive":
+            selected = weak_shape or hot_only
+        else:
+            raise ValueError(f"unknown dispatcher mode: {mode}")
+        if not (selected or weak_shape or hot_only):
+            continue
+        confidence = "high" if strong_shape else ("medium" if weak_shape and pred_count > 1 and succ_count > 1 else "low")
+        warnings = []
+        if pred_count < min_pred or succ_count < min_succ:
+            warnings.append("missing multi-predecessor or multi-successor dispatcher shape; could be a loop or normal hot block")
+        details.append(
+            {
+                "key": key,
+                "block": _format_key(key),
+                "selected": selected,
+                "confidence": confidence,
+                "mode": mode,
+                "score": score,
+                "hits": hits,
+                "observed_predecessors": pred_count,
+                "observed_successors": succ_count,
+                "warnings": warnings,
+            }
+        )
+    details.sort(key=lambda item: (not item["selected"], -item["score"], item["block"]))
+    return details
 
 
 def deflatten_flow(
@@ -742,6 +811,7 @@ def deflatten_flow(
     dispatcher_min_hits: int = 2,
     dispatcher_min_pred: int = 2,
     dispatcher_min_succ: int = 2,
+    dispatcher_mode: str = "strict",
 ) -> dict[str, Any]:
     """反平坦化分析：从执行流中过滤 dispatcher 块，重建真实控制流边。
 
@@ -774,6 +844,14 @@ def deflatten_flow(
         min_hits=dispatcher_min_hits,
         min_pred=dispatcher_min_pred,
         min_succ=dispatcher_min_succ,
+        mode=dispatcher_mode,
+    )
+    dispatcher_candidate_details = _dispatcher_candidate_details(
+        compressed, hot_blocks,
+        min_hits=dispatcher_min_hits,
+        min_pred=dispatcher_min_pred,
+        min_succ=dispatcher_min_succ,
+        mode=dispatcher_mode,
     )
 
     # 从压缩流中过滤 dispatcher，重建真实边
@@ -901,7 +979,7 @@ def deflatten_flow(
         ],
     }
 
-    return {
+    return attach_ai_digest("deflatten", {
         "summary": {
             "original_blocks": len(set(e.key for e in compressed)),
             "dispatcher_blocks": len(dispatcher_keys),
@@ -909,8 +987,15 @@ def deflatten_flow(
             "real_edges": len(real_transitions),
             "real_branch_points": len(real_branch_points),
             "real_events_in_spine": len(real_spine_keys),
+            "dispatcher_mode": dispatcher_mode,
+            **_coverage_trace_info(coverage),
         },
+        "warnings": [w for w in [_hit_count_warning(coverage)] if w],
         "dispatcher_blocks": [_format_key(k) for k in sorted(dispatcher_keys, key=lambda k: (-hot_blocks.get(k, 0), k[1]))],
+        "dispatcher_candidates": [
+            {k: v for k, v in item.items() if k != "key"}
+            for item in dispatcher_candidate_details[:50]
+        ],
         "real_function_order": " -> ".join(real_function_order),
         "real_execution_spine": [_format_key(k) for k in real_spine_keys[:80]],
         "real_branch_points": real_branch_points[:20],
@@ -927,7 +1012,7 @@ def deflatten_flow(
             for key, hits in real_hot_blocks.most_common(50)
         ],
         "original_flow_result": flow_result,
-    }
+    })
 
 
 def deflatten_merge(
@@ -940,6 +1025,7 @@ def deflatten_merge(
     dispatcher_min_hits: int = 2,
     dispatcher_min_pred: int = 2,
     dispatcher_min_succ: int = 2,
+    dispatcher_mode: str = "strict",
 ) -> dict[str, Any]:
     """合并多次 deflatten 结果，还原完整真实 CFG。
 
@@ -968,6 +1054,7 @@ def deflatten_merge(
             dispatcher_min_hits=dispatcher_min_hits,
             dispatcher_min_pred=dispatcher_min_pred,
             dispatcher_min_succ=dispatcher_min_succ,
+            dispatcher_mode=dispatcher_mode,
         )
         summary = result.get("summary", {})
         per_trace.append({
@@ -1074,7 +1161,7 @@ def deflatten_merge(
         if len(dict.fromkeys(edge_sources.get((_parse_key(e["from"]), _parse_key(e["to"])), []))) == total_traces
     ]
 
-    return {
+    return attach_ai_digest("deflatten_merge", {
         "summary": {
             "total_traces": total_traces,
             "total_real_blocks": len(all_real_blocks),
@@ -1084,9 +1171,12 @@ def deflatten_merge(
             "total_merge_points": len(merge_points),
             "common_edges": len(common_edges),
             "input_dependent_edges": len(input_dependent_edges),
+            "dispatcher_mode": dispatcher_mode,
+            "hit_count_precision": ",".join(sorted(set(str(getattr(c, "hit_count_precision", "unknown")) for c in coverages))),
         },
         "per_trace_summary": per_trace,
         "dispatcher_blocks": sorted([_format_key(k) for k in all_dispatcher_blocks]),
+        "warnings": [w for w in sorted(set(filter(None, (_hit_count_warning(c) for c in coverages))))],
         "real_cfg": {
             "blocks": block_coverage[:100],
             "edges": edge_coverage[:100],
@@ -1101,7 +1191,7 @@ def deflatten_merge(
             "description": "Edges NOT covered by all traces (input-dependent, key for understanding different behaviors)",
             "edges": input_dependent_edges[:50],
         },
-    }
+    })
 
 
 def _parse_key(formatted: str) -> tuple[str, int]:
@@ -1128,6 +1218,7 @@ def recover_state_transitions(
     dispatcher_min_hits: int = 2,
     dispatcher_min_pred: int = 2,
     dispatcher_min_succ: int = 2,
+    dispatcher_mode: str = "strict",
 ) -> dict[str, Any]:
     """从多次执行 trace 中恢复状态转移表。
 
@@ -1170,6 +1261,7 @@ def recover_state_transitions(
             min_hits=dispatcher_min_hits,
             min_pred=dispatcher_min_pred,
             min_succ=dispatcher_min_succ,
+            mode=dispatcher_mode,
         )
         all_dispatcher_keys.update(dispatcher_keys)
 
@@ -1252,7 +1344,7 @@ def recover_state_transitions(
             }
         transition_table.append(row)
 
-    return {
+    return attach_ai_digest("recover_state", {
         "summary": {
             "total_traces": total_traces,
             "total_real_blocks": len(all_real_blocks),
@@ -1261,7 +1353,10 @@ def recover_state_transitions(
             "deterministic_transitions": len(deterministic_transitions),
             "input_dependent_transitions": len(input_dependent_transitions),
             "branch_blocks": len(branch_blocks),
+            "dispatcher_mode": dispatcher_mode,
+            "hit_count_precision": ",".join(sorted(set(str(getattr(c, "hit_count_precision", "unknown")) for c in coverages))),
         },
+        "warnings": [w for w in sorted(set(filter(None, (_hit_count_warning(c) for c in coverages))))],
         "state_transition_table": transition_table[:30],
         "deterministic_transitions": deterministic_transitions[:50],
         "input_dependent_transitions": input_dependent_transitions[:50],
@@ -1282,4 +1377,4 @@ def recover_state_transitions(
                 "The state variable is typically compared against constants in the dispatcher block; match those constants to the successor blocks.",
             ],
         },
-    }
+    })

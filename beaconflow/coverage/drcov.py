@@ -141,4 +141,4 @@ def load_drcov(path: str | Path) -> CoverageData:
             absolute = None
         blocks.append(CoverageBlock(module_id=module_id, offset=offset, size=size, absolute_start=absolute))
 
-    return CoverageData(modules=modules, blocks=blocks)
+    return CoverageData(modules=modules, blocks=blocks, source_kind="drcov", trace_mode="drcov", hit_count_precision="coverage-table")

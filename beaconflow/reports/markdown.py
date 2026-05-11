@@ -3,6 +3,33 @@ from __future__ import annotations
 from typing import Any
 
 
+def _ai_digest_lines(result: dict[str, Any]) -> list[str]:
+    digest = result.get("ai_digest")
+    if not digest:
+        return []
+    lines = [
+        "## AI Digest",
+        "",
+        f"- Task: {digest.get('task', '<unknown>')}",
+        f"- Confidence: {digest.get('confidence', '<unknown>')}",
+    ]
+    if digest.get("warnings"):
+        lines.append(f"- Warnings: {len(digest.get('warnings', []))}")
+    findings = digest.get("top_findings", [])
+    if findings:
+        lines.extend(["", "### Top Findings"])
+        for item in findings[:5]:
+            lines.append(f"- `{item.get('evidence_id')}` {item.get('claim')} confidence={item.get('confidence')}")
+    actions = digest.get("recommended_actions", [])
+    if actions:
+        lines.extend(["", "### Recommended Actions"])
+        for item in actions[:5]:
+            address = f" at `{item.get('address')}`" if item.get("address") else ""
+            lines.append(f"- P{item.get('priority')}: {item.get('kind')}{address} - {item.get('reason')}")
+    lines.append("")
+    return lines
+
+
 def coverage_to_markdown(result: dict[str, Any]) -> str:
     summary = result["summary"]
     lines = [
@@ -11,11 +38,9 @@ def coverage_to_markdown(result: dict[str, Any]) -> str:
         f"- Functions: {summary['covered_functions']} / {summary['total_functions']}",
         f"- Basic blocks: {summary['covered_basic_blocks']} / {summary['total_basic_blocks']}",
         "",
-        "## Covered Functions",
-        "",
-        "| Function | Address | Blocks | Coverage |",
-        "| --- | --- | ---: | ---: |",
     ]
+    lines.extend(_ai_digest_lines(result))
+    lines.extend(["## Covered Functions", "", "| Function | Address | Blocks | Coverage |", "| --- | --- | ---: | ---: |"])
 
     for item in result["covered_functions"][:100]:
         lines.append(
@@ -35,6 +60,9 @@ def deflatten_to_markdown(result: dict[str, Any]) -> str:
     lines = [
         "# BeaconFlow Deflatten Report",
         "",
+    ]
+    lines.extend(_ai_digest_lines(result))
+    lines.extend([
         "## Summary",
         "",
         f"- Original blocks (with dispatcher): {summary.get('original_blocks', 0)}",
@@ -43,14 +71,37 @@ def deflatten_to_markdown(result: dict[str, Any]) -> str:
         f"- Real edges: {summary.get('real_edges', 0)}",
         f"- Real branch points: {summary.get('real_branch_points', 0)}",
         f"- Real events in spine: {summary.get('real_events_in_spine', 0)}",
+        f"- Dispatcher mode: {summary.get('dispatcher_mode', 'strict')}",
+        f"- Trace mode: {summary.get('trace_mode') or '<unknown>'}",
+        f"- Hit-count precision: {summary.get('hit_count_precision', '<unknown>')}",
         "",
-    ]
+    ])
+
+    warnings = result.get("warnings", [])
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
 
     dispatchers = result.get("dispatcher_blocks", [])
     if dispatchers:
         lines.extend(["## Dispatcher Blocks (Removed)", ""])
         for block in dispatchers:
             lines.append(f"- `{block}`")
+        lines.append("")
+
+    candidates = result.get("dispatcher_candidates", [])
+    if candidates:
+        lines.extend(["## Dispatcher Candidates (Top 20)", ""])
+        for item in candidates[:20]:
+            selected = "selected" if item.get("selected") else "not-selected"
+            warning_text = f" warnings={'; '.join(item.get('warnings', []))}" if item.get("warnings") else ""
+            lines.append(
+                f"- `{item['block']}` {selected} confidence={item.get('confidence')} "
+                f"mode={item.get('mode')} score={item.get('score')} hits={item.get('hits')} "
+                f"pred={item.get('observed_predecessors')} succ={item.get('observed_successors')}{warning_text}"
+            )
         lines.append("")
 
     lines.extend(["## Real Function Order", "", result.get("real_function_order", "<none>"), ""])
@@ -103,6 +154,9 @@ def flow_to_markdown(result: dict[str, Any]) -> str:
     lines = [
         "# BeaconFlow Execution Report",
         "",
+    ]
+    lines.extend(_ai_digest_lines(result))
+    lines.extend([
         "## Summary",
         "",
         f"- Raw target events: {summary['raw_target_events']}",
@@ -112,6 +166,8 @@ def flow_to_markdown(result: dict[str, Any]) -> str:
         f"- Functions seen: {summary['functions_seen']}",
         f"- Truncated: {summary['truncated']}",
         f"- Focus function: {summary.get('focus_function') or '<none>'}",
+        f"- Trace mode: {summary.get('trace_mode') or '<unknown>'}",
+        f"- Hit-count precision: {summary.get('hit_count_precision', '<unknown>')}",
         "",
         "## Diagnostics",
         "",
@@ -121,7 +177,10 @@ def flow_to_markdown(result: dict[str, Any]) -> str:
         "",
         "## AI Guidance",
         "",
-    ]
+    ])
+
+    if diagnostics.get("hit_count_warning"):
+        lines.extend(["## Warnings", "", f"- {diagnostics['hit_count_warning']}", ""])
 
     for item in ai.get("how_to_use", []):
         lines.append(f"- {item}")
@@ -174,6 +233,9 @@ def deflatten_merge_to_markdown(result: dict[str, Any]) -> str:
     lines = [
         "# BeaconFlow Deflatten Merge Report",
         "",
+    ]
+    lines.extend(_ai_digest_lines(result))
+    lines.extend([
         "## Summary",
         "",
         f"- Total traces merged: {summary.get('total_traces', 0)}",
@@ -184,8 +246,17 @@ def deflatten_merge_to_markdown(result: dict[str, Any]) -> str:
         f"- Total merge points: {summary.get('total_merge_points', 0)}",
         f"- Common edges (all traces): {summary.get('common_edges', 0)}",
         f"- Input-dependent edges: {summary.get('input_dependent_edges', 0)}",
+        f"- Dispatcher mode: {summary.get('dispatcher_mode', 'strict')}",
+        f"- Hit-count precision: {summary.get('hit_count_precision', '<unknown>')}",
         "",
-    ]
+    ])
+
+    warnings = result.get("warnings", [])
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
 
     per_trace = result.get("per_trace_summary", [])
     if per_trace:
@@ -276,6 +347,9 @@ def state_transitions_to_markdown(result: dict[str, Any]) -> str:
     lines = [
         "# BeaconFlow State Transition Recovery",
         "",
+    ]
+    lines.extend(_ai_digest_lines(result))
+    lines.extend([
         "## Summary",
         "",
         f"- Total traces: {summary.get('total_traces', 0)}",
@@ -285,8 +359,17 @@ def state_transitions_to_markdown(result: dict[str, Any]) -> str:
         f"- Deterministic transitions: {summary.get('deterministic_transitions', 0)}",
         f"- Input-dependent transitions: {summary.get('input_dependent_transitions', 0)}",
         f"- Branch blocks (multi-successor): {summary.get('branch_blocks', 0)}",
+        f"- Dispatcher mode: {summary.get('dispatcher_mode', 'strict')}",
+        f"- Hit-count precision: {summary.get('hit_count_precision', '<unknown>')}",
         "",
-    ]
+    ])
+
+    warnings = result.get("warnings", [])
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
 
     branch_blocks = result.get("branch_blocks", [])
     if branch_blocks:
@@ -345,18 +428,29 @@ def branch_rank_to_markdown(result: dict[str, Any]) -> str:
     lines = [
         "# BeaconFlow Branch Rank",
         "",
+    ]
+    lines.extend(_ai_digest_lines(result))
+    lines.extend([
         "## Summary",
         "",
         f"- Total traces: {summary.get('total_traces', 0)}",
         f"- Baseline: `{summary.get('baseline', '<none>')}`",
         f"- Ranked branch points: {summary.get('ranked_branch_points', 0)}",
         f"- Focus function: {summary.get('focus_function') or '<none>'}",
+        f"- Hit-count precision: {summary.get('hit_count_precision', '<unknown>')}",
         "",
         "## Traces",
         "",
         "| Trace | Role | Blocks | Transitions |",
         "| --- | --- | ---: | ---: |",
-    ]
+    ])
+
+    warnings = result.get("warnings", [])
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
 
     for trace in result.get("traces", []):
         lines.append(
@@ -400,6 +494,9 @@ def flow_diff_to_markdown(result: dict[str, Any]) -> str:
     lines = [
         "# BeaconFlow Flow Diff",
         "",
+    ]
+    lines.extend(_ai_digest_lines(result))
+    lines.extend([
         "## Summary",
         "",
         f"- Focus function: {summary.get('focus_function') or '<none>'}",
@@ -413,7 +510,7 @@ def flow_diff_to_markdown(result: dict[str, Any]) -> str:
         "",
         "## AI Guidance",
         "",
-    ]
+    ])
     for item in ai.get("how_to_use", []):
         lines.append(f"- {item}")
 

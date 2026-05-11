@@ -121,4 +121,6 @@ class CoverageBlock:
 class CoverageData:
     modules: dict[int, DrcovModule] = field(default_factory=dict)
     blocks: list[CoverageBlock] = field(default_factory=list)
-
+    source_kind: str = "unknown"
+    trace_mode: str | None = None
+    hit_count_precision: str = "unknown"

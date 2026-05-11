@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, rank_input_branches, recover_state_transitions
+from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
@@ -84,6 +85,7 @@ def _cmd_deflatten(args: argparse.Namespace) -> int:
         dispatcher_min_hits=args.dispatcher_min_hits,
         dispatcher_min_pred=args.dispatcher_min_pred,
         dispatcher_min_succ=args.dispatcher_min_succ,
+        dispatcher_mode=args.dispatcher_mode,
     )
     text = deflatten_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
     if args.output:
@@ -112,6 +114,7 @@ def _cmd_deflatten_merge(args: argparse.Namespace) -> int:
         dispatcher_min_hits=args.dispatcher_min_hits,
         dispatcher_min_pred=args.dispatcher_min_pred,
         dispatcher_min_succ=args.dispatcher_min_succ,
+        dispatcher_mode=args.dispatcher_mode,
     )
     text = deflatten_merge_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
     if args.output:
@@ -140,6 +143,7 @@ def _cmd_recover_state(args: argparse.Namespace) -> int:
         dispatcher_min_hits=args.dispatcher_min_hits,
         dispatcher_min_pred=args.dispatcher_min_pred,
         dispatcher_min_succ=args.dispatcher_min_succ,
+        dispatcher_mode=args.dispatcher_mode,
     )
     text = state_transitions_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
     if args.output:
@@ -196,6 +200,53 @@ def _cmd_branch_rank(args: argparse.Namespace) -> int:
     else:
         print(text)
     return 0
+
+
+def _cmd_ai_summary(args: argparse.Namespace) -> int:
+    result = json.loads(Path(args.input).read_text(encoding="utf-8"))
+    kind = args.kind or infer_report_kind(result)
+    compact = compact_report(kind, result, max_findings=args.max_findings)
+    text = _ai_summary_to_markdown(compact) if args.format == "markdown" else json.dumps(compact, indent=2)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _ai_summary_to_markdown(result: dict) -> str:
+    digest = result.get("ai_digest", {})
+    quality = result.get("data_quality", {})
+    lines = [
+        "# BeaconFlow AI Summary",
+        "",
+        "## Digest",
+        "",
+        f"- Task: {digest.get('task', '<unknown>')}",
+        f"- Confidence: {digest.get('confidence', '<unknown>')}",
+        f"- Hit-count precision: {quality.get('hit_count_precision', '<unknown>')}",
+        f"- Mapping ratio: {quality.get('mapping_ratio') if quality.get('mapping_ratio') is not None else '<unknown>'}",
+        "",
+    ]
+    warnings = digest.get("warnings", [])
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
+    findings = digest.get("top_findings", [])
+    if findings:
+        lines.extend(["## Top Findings", ""])
+        for item in findings:
+            lines.append(f"- `{item.get('evidence_id')}` {item.get('claim')} confidence={item.get('confidence')}")
+        lines.append("")
+    actions = digest.get("recommended_actions", [])
+    if actions:
+        lines.extend(["## Recommended Actions", ""])
+        for item in actions:
+            address = f" at `{item.get('address')}`" if item.get("address") else ""
+            lines.append(f"- P{item.get('priority')}: {item.get('kind')}{address} - {item.get('reason')}")
+    return "\n".join(lines) + "\n"
 
 
 def _load_flow_input(args: argparse.Namespace):
@@ -450,11 +501,12 @@ def _cmd_qemu_explore(args: argparse.Namespace) -> int:
             }
         )
 
-    report = {
+    report = attach_ai_digest("qemu_explore", {
         "summary": {
             "target": args.target,
             "qemu_arch": args.qemu_arch,
             "trace_mode": args.trace_mode,
+            "hit_count_precision": "exact" if args.trace_mode == "exec,nochain" else ("translation-log" if args.trace_mode == "in_asm" else "unknown"),
             "qemu_available": qemu_available(args.qemu_arch),
             "metadata_path": str(metadata_path),
             "runs": len(report_runs),
@@ -471,7 +523,7 @@ def _cmd_qemu_explore(args: argparse.Namespace) -> int:
                 item["name"],
             ),
         )[: max(1, args.keep_top)],
-    }
+    })
     text = _qemu_explore_to_markdown(report) if args.format == "markdown" else json.dumps(report, indent=2)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
@@ -639,6 +691,21 @@ def _qemu_explore_to_markdown(report: dict[str, object]) -> str:
     lines = [
         "# BeaconFlow QEMU Explore",
         "",
+    ]
+    digest = compact_report("qemu_explore", report, max_findings=5).get("ai_digest", {})
+    if digest:
+        lines.extend(["## AI Digest", "", f"- Task: {digest.get('task')}", f"- Confidence: {digest.get('confidence')}", ""])
+        if digest.get("top_findings"):
+            lines.extend(["### Top Findings"])
+            for item in digest["top_findings"][:5]:
+                lines.append(f"- `{item.get('evidence_id')}` {item.get('claim')} confidence={item.get('confidence')}")
+            lines.append("")
+        if digest.get("recommended_actions"):
+            lines.extend(["### Recommended Actions"])
+            for item in digest["recommended_actions"][:5]:
+                lines.append(f"- P{item.get('priority')}: {item.get('kind')} - {item.get('reason')}")
+            lines.append("")
+    lines.extend([
         "## Summary",
         "",
         f"- Target: `{summary['target']}`",
@@ -653,7 +720,7 @@ def _qemu_explore_to_markdown(report: dict[str, object]) -> str:
         "",
         "| Case | Verdict | Return | Unique Blocks | New vs Baseline | New Global | Output | Stdin |",
         "| --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
-    ]
+    ])
     for run in report["runs"]:
         lines.append(
             f"| `{run['name']}` | `{run['verdict']}` | {run['returncode']} | "
@@ -759,6 +826,7 @@ def build_parser() -> argparse.ArgumentParser:
     deflatten.add_argument("--dispatcher-min-hits", type=int, default=2, help="Min hits for a block to be considered dispatcher (default: 2).")
     deflatten.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
     deflatten.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
+    deflatten.add_argument("--dispatcher-mode", choices=("strict", "balanced", "aggressive"), default="strict", help="Dispatcher selection mode. strict requires hot + multi-predecessor + multi-successor shape; aggressive is legacy heuristic-like.")
     deflatten.add_argument("--format", choices=("json", "markdown"), default="json")
     deflatten.add_argument("--output")
     deflatten.set_defaults(func=_cmd_deflatten)
@@ -778,6 +846,7 @@ def build_parser() -> argparse.ArgumentParser:
     deflatten_merge_parser.add_argument("--dispatcher-min-hits", type=int, default=2, help="Min hits for a block to be considered dispatcher (default: 2).")
     deflatten_merge_parser.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
     deflatten_merge_parser.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
+    deflatten_merge_parser.add_argument("--dispatcher-mode", choices=("strict", "balanced", "aggressive"), default="strict", help="Dispatcher selection mode. strict avoids hot-loop/state-machine false positives; aggressive is legacy heuristic-like.")
     deflatten_merge_parser.add_argument("--format", choices=("json", "markdown"), default="json")
     deflatten_merge_parser.add_argument("--output")
     deflatten_merge_parser.set_defaults(func=_cmd_deflatten_merge)
@@ -797,6 +866,7 @@ def build_parser() -> argparse.ArgumentParser:
     recover_state_parser.add_argument("--dispatcher-min-hits", type=int, default=2, help="Min hits for a block to be considered dispatcher (default: 2).")
     recover_state_parser.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
     recover_state_parser.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
+    recover_state_parser.add_argument("--dispatcher-mode", choices=("strict", "balanced", "aggressive"), default="strict", help="Dispatcher selection mode. strict avoids hot-loop/state-machine false positives; aggressive is legacy heuristic-like.")
     recover_state_parser.add_argument("--format", choices=("json", "markdown"), default="json")
     recover_state_parser.add_argument("--output")
     recover_state_parser.set_defaults(func=_cmd_recover_state)
@@ -824,6 +894,14 @@ def build_parser() -> argparse.ArgumentParser:
     branch_rank.add_argument("--format", choices=("json", "markdown"), default="json")
     branch_rank.add_argument("--output")
     branch_rank.set_defaults(func=_cmd_branch_rank)
+
+    ai_summary = sub.add_parser("ai-summary", help="Compact an existing BeaconFlow JSON report into an AI-first digest.")
+    ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")
+    ai_summary.add_argument("--kind", choices=("coverage", "flow", "flow_diff", "deflatten", "deflatten_merge", "recover_state", "branch_rank", "qemu_explore", "unknown"), help="Report kind. Auto-detected if omitted.")
+    ai_summary.add_argument("--max-findings", type=int, default=5)
+    ai_summary.add_argument("--format", choices=("json", "markdown"), default="json")
+    ai_summary.add_argument("--output")
+    ai_summary.set_defaults(func=_cmd_ai_summary)
 
     collect = sub.add_parser("collect", help="Run a target under bundled DynamoRIO drcov. Supports both PE (Windows) and ELF (via WSL on Windows).")
     collect.add_argument("--target", required=True, help="Executable to run (PE or ELF).")

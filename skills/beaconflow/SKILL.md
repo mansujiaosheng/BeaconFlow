@@ -84,7 +84,9 @@ Use when IDA cannot open the target (unsupported architecture) or no DynamoRIO i
 
 3. Generate fallback metadata with `metadata_from_address_log`, then use `analyze_flow` and `diff_flow` the same way as Workflow A.
 
-4. On Windows, if QEMU is not installed natively, BeaconFlow automatically detects and uses QEMU inside WSL.
+4. For precise loop counts, dispatcher frequency, timing/path-oracle work, or branch ranking based on hit deltas, collect with `trace_mode: "exec,nochain"`. The default `in_asm` mode is useful for fast path discovery, but BeaconFlow marks its hit counts as `translation-log`, not exact execution counts.
+
+5. On Windows, if QEMU is not installed natively, BeaconFlow automatically detects and uses QEMU inside WSL.
 
 ### Ghidra + pyghidra: Enhanced Metadata Export
 
@@ -104,10 +106,10 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
    python ghidra_scripts\export_ghidra_metadata.py <binary_path> [output.json]
    ```
 
-   If Ghidra is not at the default path (`D:\TOOL\ghidra_12.0.4_PUBLIC`), set the environment variable:
+   If Ghidra is not discoverable, set `GHIDRA_INSTALL_DIR` or `GHIDRA_HOME` to your local Ghidra installation:
 
    ```powershell
-   $env:GHIDRA_INSTALL_DIR = "C:\ghidra_12.0.4_PUBLIC"
+   $env:GHIDRA_INSTALL_DIR = "C:\path\to\ghidra_PUBLIC"
    python ghidra_scripts\export_ghidra_metadata.py target.exe metadata.json
    ```
 
@@ -146,6 +148,8 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `deflatten_flow` | Remove dispatcher blocks from execution flow, reconstruct real control flow edges. Key tool for CFF deflattening. |
 | `deflatten_merge` | Merge multiple deflatten results to restore complete real CFG. Identifies common paths and input-dependent branches. |
 | `recover_state_transitions` | Recover state transition table from multiple traces. Identifies deterministic vs input-dependent state variable transitions for CFF deflattening. |
+| `branch_rank` | Rank input-dependent branch points across bad/better/good traces. Start here when you need the next branch worth opening in IDA/Ghidra. |
+| `ai_summary` | Compact an existing BeaconFlow JSON report into `summary`, `data_quality`, and `ai_digest` for fast AI reading. |
 | `record_flow` | Run a target once and return the ordered executed flow. Prefer for flattened CFG triage. |
 | `diff_coverage` | Compare two coverage runs at function level. |
 | `diff_flow` | Compare two runs at block/edge level. Outputs only-left/only-right blocks, edges, and hit-count deltas. |
@@ -155,6 +159,7 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 
 - `auto_newline`: Append `\n` to stdin if missing. Many programs (flag checkers, CTF challenges) require a newline to read stdin. Default is `true` for QEMU tools, `false` for drcov tools.
 - `trace_mode`: QEMU `-d` flag. `in_asm` (default) is a translation-block log — hit counts are not precise loop counts. Use `exec,nochain` for precise execution counts.
+- `dispatcher_mode`: Dispatcher selection mode for `deflatten_flow`, `deflatten_merge`, and `recover_state_transitions`. Default is `strict`, which requires hot + multi-predecessor + multi-successor shape and is safer against hot-loop/state-machine false positives. Use `balanced` for more candidates, `aggressive` for legacy heuristic-like exploration.
 - `address_min` / `address_max`: Filter address-log events to a specific range. Essential for stripping QEMU runtime noise from the target's own code.
 - `gap`: Address clustering threshold for `metadata_from_address_log`. Addresses separated by more than this gap start a new function region.
 - `success_regex` / `failure_regex`: Classify `qemu_explore` runs by matching stdout/stderr.
@@ -163,8 +168,18 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 - `from` / `to`: Address range filtering for `flow` and `flow-diff`. Accepts function names (e.g., `main`, `check_flag`) or hex addresses (e.g., `0x401000`). `--from` uses the function's start address (inclusive), `--to` uses the function's end address (exclusive).
 - `timeout`: Timeout in seconds for `collect` and `record-flow`. Default is 120. If the target hangs, the drcov log is still preserved.
 
+## Deflattening Defaults
+
+Use `dispatcher_mode: "strict"` unless there is clear evidence that a typical CFF dispatcher is being missed. Strict mode intentionally does not select low-confidence hot blocks that only have one predecessor or one successor; those are often loops, state machines, VM dispatchers, or normal hot code.
+
+Read `dispatcher_candidates` before trusting `dispatcher_blocks`. A candidate with `selected: false`, `confidence: low`, and a warning about missing multi-predecessor or multi-successor shape is evidence to inspect manually, not a block to remove automatically.
+
+When using QEMU `in_asm`, do not use hit counts as a decisive dispatcher signal. Recollect with `trace_mode: "exec,nochain"` before making conclusions from hit count, loop count, or timing/path-oracle behavior.
+
 ## Interpretation Rules
 
+- First read top-level `ai_digest` and `data_quality` before scanning long lists. `ai_digest.top_findings` gives the highest-value evidence, `recommended_actions` gives machine-actionable next steps, and `data_quality.hit_count_precision` tells whether hit counts are reliable.
+- Use `ai-summary` / `ai_summary` on large saved JSON reports before loading the full report into context.
 - BeaconFlow preserves the drcov BB Table order (or QEMU address log order) to recover the observed basic-block flow for one run.
 - Use the recovered flow to ignore static CFG regions that were not exercised by the current input.
 - Register values, memory values, and branch conditions require a richer trace source such as Tenet, Frida, Pin, or custom DynamoRIO instrumentation.
@@ -175,7 +190,8 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 - In `qemu_explore`, focus on inputs with high `new_blocks_vs_baseline` — they reached code not seen by the baseline input and are most likely to reveal different logic paths.
 - Different `output_fingerprint` with no path novelty usually means data-state differences, not control-flow differences.
 - QEMU `-d in_asm` hit counts should not be treated as precise loop iteration counts; use `-d exec,nochain` or a stronger trace for that.
+- Always check `summary.hit_count_precision` and `warnings` in `flow`, `deflatten`, `deflatten_merge`, `recover_state`, and `branch_rank` reports. If it says `translation-log`, treat hit deltas as weak evidence.
 - Ghidra-exported metadata is fully compatible with IDA-exported metadata. Prefer Ghidra for architectures IDA does not support (LoongArch, etc.).
 - When both IDA and Ghidra metadata are available, they may differ in function naming and basic-block boundaries, but the JSON schema is identical.
-- Dispatcher identification is heuristic-based (high hit count + many predecessors/successors). Adjust `--dispatcher-min-hits`, `--dispatcher-min-pred`, `--dispatcher-min-succ` if needed.
+- Dispatcher identification is still heuristic-based. Default `strict` mode reduces false positives by requiring hot + multi-predecessor + multi-successor shape. Adjust `dispatcher_mode`, `dispatcher_min_hits`, `dispatcher_min_pred`, and `dispatcher_min_succ` only after checking candidate warnings.
 - State variable recovery (knowing *why* the dispatcher chose a specific block) requires richer trace data than BeaconFlow currently provides.

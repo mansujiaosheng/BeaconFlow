@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, rank_input_branches, recover_state_transitions
+from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
@@ -210,6 +211,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "dispatcher_min_hits": {"type": "integer", "default": 2, "description": "Min hits for a block to be considered dispatcher."},
                 "dispatcher_min_pred": {"type": "integer", "default": 2, "description": "Min predecessors for dispatcher."},
                 "dispatcher_min_succ": {"type": "integer", "default": 2, "description": "Min successors for dispatcher."},
+                "dispatcher_mode": {"type": "string", "enum": ["strict", "balanced", "aggressive"], "default": "strict", "description": "strict requires hot + multi-predecessor + multi-successor shape; aggressive is legacy heuristic-like."},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
             },
             "required": ["metadata_path"],
@@ -231,6 +233,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "dispatcher_min_hits": {"type": "integer", "default": 2},
                 "dispatcher_min_pred": {"type": "integer", "default": 2},
                 "dispatcher_min_succ": {"type": "integer", "default": 2},
+                "dispatcher_mode": {"type": "string", "enum": ["strict", "balanced", "aggressive"], "default": "strict"},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
             },
             "required": ["metadata_path"],
@@ -252,6 +255,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "dispatcher_min_hits": {"type": "integer", "default": 2},
                 "dispatcher_min_pred": {"type": "integer", "default": 2},
                 "dispatcher_min_succ": {"type": "integer", "default": 2},
+                "dispatcher_mode": {"type": "string", "enum": ["strict", "balanced", "aggressive"], "default": "strict"},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
             },
             "required": ["metadata_path"],
@@ -277,6 +281,18 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
             },
             "required": ["metadata_path"],
+        },
+    },
+    "ai_summary": {
+        "description": "Compact an existing BeaconFlow JSON report into an AI-first digest.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "report_path": {"type": "string"},
+                "kind": {"type": "string", "enum": ["coverage", "flow", "flow_diff", "deflatten", "deflatten_merge", "recover_state", "branch_rank", "qemu_explore", "unknown"]},
+                "max_findings": {"type": "integer", "default": 5},
+            },
+            "required": ["report_path"],
         },
     },
 }
@@ -422,11 +438,12 @@ def _mcp_qemu_explore(arguments: dict[str, Any]) -> dict[str, Any]:
             }
         )
 
-    return {
+    return attach_ai_digest("qemu_explore", {
         "summary": {
             "target": target,
             "qemu_arch": qemu_arch,
             "trace_mode": arguments.get("trace_mode") or "in_asm",
+            "hit_count_precision": "exact" if (arguments.get("trace_mode") or "in_asm") == "exec,nochain" else ("translation-log" if (arguments.get("trace_mode") or "in_asm") == "in_asm" else "unknown"),
             "qemu_available": qemu_available(qemu_arch),
             "metadata_path": str(metadata_path),
             "runs": len(report_runs),
@@ -434,7 +451,7 @@ def _mcp_qemu_explore(arguments: dict[str, Any]) -> dict[str, Any]:
             "total_union_blocks": sum(len(f.blocks) for f in metadata.functions),
         },
         "runs": report_runs,
-    }
+    })
 
 
 def _load_flow_source(arguments: dict[str, Any], coverage_key: str, address_log_key: str):
@@ -602,6 +619,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             dispatcher_min_hits=arguments.get("dispatcher_min_hits", 2),
             dispatcher_min_pred=arguments.get("dispatcher_min_pred", 2),
             dispatcher_min_succ=arguments.get("dispatcher_min_succ", 2),
+            dispatcher_mode=arguments.get("dispatcher_mode") or "strict",
         )
         if arguments.get("format") == "markdown":
             return _tool_result(deflatten_to_markdown(result))
@@ -630,6 +648,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             dispatcher_min_hits=arguments.get("dispatcher_min_hits", 2),
             dispatcher_min_pred=arguments.get("dispatcher_min_pred", 2),
             dispatcher_min_succ=arguments.get("dispatcher_min_succ", 2),
+            dispatcher_mode=arguments.get("dispatcher_mode") or "strict",
         )
         if arguments.get("format") == "markdown":
             return _tool_result(deflatten_merge_to_markdown(result))
@@ -658,6 +677,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             dispatcher_min_hits=arguments.get("dispatcher_min_hits", 2),
             dispatcher_min_pred=arguments.get("dispatcher_min_pred", 2),
             dispatcher_min_succ=arguments.get("dispatcher_min_succ", 2),
+            dispatcher_mode=arguments.get("dispatcher_mode") or "strict",
         )
         if arguments.get("format") == "markdown":
             return _tool_result(state_transitions_to_markdown(result))
@@ -706,6 +726,11 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if arguments.get("format") == "markdown":
             return _tool_result(branch_rank_to_markdown(result))
         return _tool_result(result)
+
+    if name == "ai_summary":
+        result = json.loads(Path(arguments["report_path"]).read_text(encoding="utf-8"))
+        kind = arguments.get("kind") or infer_report_kind(result)
+        return _tool_result(compact_report(kind, result, max_findings=arguments.get("max_findings") or 5))
 
     raise ValueError(f"unknown tool: {name}")
 

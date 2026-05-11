@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from beaconflow.analysis.ai_digest import attach_ai_digest
 from beaconflow.models import CoverageData, Function, ProgramMetadata, hex_addr, normalize_path_name
 
 
@@ -78,7 +79,7 @@ def analyze_coverage(metadata: ProgramMetadata, coverage: CoverageData) -> dict[
     covered_functions = [x for x in function_results if x.is_covered]
     uncovered_functions = [x for x in function_results if not x.is_covered]
 
-    return {
+    return attach_ai_digest("coverage", {
         "summary": {
             "covered_functions": len(covered_functions),
             "total_functions": len(function_results),
@@ -87,7 +88,7 @@ def analyze_coverage(metadata: ProgramMetadata, coverage: CoverageData) -> dict[
         },
         "covered_functions": [x.to_json() for x in sorted(covered_functions, key=lambda x: (-x.percent, x.function.start))],
         "uncovered_functions": [x.to_json() for x in sorted(uncovered_functions, key=lambda x: x.function.start)],
-    }
+    })
 
 
 def diff_coverage(metadata: ProgramMetadata, left: CoverageData, right: CoverageData) -> dict[str, Any]:
@@ -100,10 +101,10 @@ def diff_coverage(metadata: ProgramMetadata, left: CoverageData, right: Coverage
     only_right = sorted(set(right_funcs) - set(left_funcs))
     both = sorted(set(left_funcs) & set(right_funcs))
 
-    return {
+    return attach_ai_digest("coverage_diff", {
         "left_summary": left_result["summary"],
         "right_summary": right_result["summary"],
         "only_left_functions": [left_funcs[x] for x in only_left],
         "only_right_functions": [right_funcs[x] for x in only_right],
         "both_functions": [left_funcs[x] for x in both],
-    }
+    })

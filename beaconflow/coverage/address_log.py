@@ -33,7 +33,13 @@ def load_address_log(
     这对于识别 dispatcher 和重建真实控制流至关重要。
     """
     blocks: list[CoverageBlock] = []
+    saw_nochain = False
+    saw_in_asm = False
     for line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
+        if _QEMU_EXEC_NOCHAIN_RE.search(line):
+            saw_nochain = True
+        elif _QEMU_EXEC_RE.search(line) or re.match(r"\s*0x[0-9a-fA-F]+:", line):
+            saw_in_asm = True
         address = _extract_address(line)
         if address is None:
             continue
@@ -42,7 +48,9 @@ def load_address_log(
         if max_address is not None and address >= max_address:
             continue
         blocks.append(CoverageBlock(module_id=0, offset=address, size=block_size, absolute_start=address))
-    return CoverageData(modules={}, blocks=blocks)
+    trace_mode = "exec,nochain" if saw_nochain else ("in_asm" if saw_in_asm else "address-log")
+    precision = "exact" if saw_nochain else ("translation-log" if saw_in_asm else "unknown")
+    return CoverageData(modules={}, blocks=blocks, source_kind="address-log", trace_mode=trace_mode, hit_count_precision=precision)
 
 
 def _extract_address(line: str) -> int | None:

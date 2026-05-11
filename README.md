@@ -190,7 +190,15 @@ Markdown 输出：
 python -m beaconflow.cli record-flow --metadata metadata.json --target target.exe --output-dir runs --format markdown --output flow.md -- input.bin
 ```
 
-给 AI 使用时，推荐优先读取 `ai_report` 中的 `how_to_use`、`function_order_text`、`execution_spine_preview`、`dispatcher_candidates`、`branch_points`、`join_points`、`loop_like_edges`、`next_steps`。
+给 AI 使用时，推荐优先读取顶层 `ai_digest` 和 `data_quality`：
+
+- `ai_digest.top_findings`：当前报告最值得看的证据点
+- `ai_digest.recommended_actions`：下一步可执行动作，例如打开反汇编地址或重新采集 `exec,nochain`
+- `ai_digest.evidence_refs`：可引用的证据 ID
+- `data_quality.hit_count_precision`：判断 hit count 是否可信
+- `data_quality.recommended_recollection`：需要重新采集时的建议
+
+需要更多上下文时，再读取 `ai_report` 中的 `how_to_use`、`function_order_text`、`execution_spine_preview`、`dispatcher_candidates`、`branch_points`、`join_points`、`loop_like_edges`、`next_steps`。
 
 ---
 
@@ -378,6 +386,16 @@ python -m beaconflow.cli flow-diff `
 
 `flow-diff` 的 Markdown 报告会优先输出连续地址范围，例如 `0x22ef28-0x22ef68`，方便 AI 先定位"正确路径多跑了哪几段"，再回到反汇编里细看。
 
+### 压缩已有报告给 AI
+
+完整 JSON 报告可能很大。可以用 `ai-summary` 把已有报告压缩成只包含摘要、数据质量、关键发现和下一步动作的版本：
+
+```powershell
+python -m beaconflow.cli ai-summary --input branch_rank.json --format markdown
+```
+
+输出会保留 `summary`、`data_quality` 和 `ai_digest`。适合 MCP/Agent 先读摘要，再按 `evidence_id` 回到完整报告里查细节。
+
 ### 反平坦化分析
 
 `deflatten` 命令从执行流中自动识别并移除 dispatcher 块，重建真实控制流边。**跑一遍程序，就能知道哪些块是真实逻辑、哪些是 dispatcher 噪音**。
@@ -396,13 +414,20 @@ python -m beaconflow.cli deflatten `
 
 # 调整 dispatcher 识别阈值
 python -m beaconflow.cli deflatten --metadata metadata.json --coverage drcov.log `
+  --dispatcher-mode strict `
   --dispatcher-min-hits 3 --dispatcher-min-pred 3 --dispatcher-min-succ 3 `
   --format markdown
 ```
 
+`--dispatcher-mode` 可选：
+- `strict`（默认）：必须同时满足高频、多前驱、多后继，优先避免把热点循环、状态机、VM/事件分发器误删。
+- `balanced`：仍要求较强 CFG 形态，但比 strict 更容易选出候选。
+- `aggressive`：接近早期启发式，适合典型 CFF 快速探索，但更容易误判热点块。
+
 `deflatten` 的 Markdown 报告包含：
 - **Summary**：原始块数、dispatcher 块数、真实块数、真实边数
 - **Dispatcher Blocks**：被移除的 dispatcher 块列表
+- **Dispatcher Candidates**：候选块、置信度、是否被选中，以及低置信候选的误判警告
 - **Real Execution Spine**：去掉 dispatcher 后的干净执行流
 - **Real Branch Points**：真实分支点（if/else、循环）
 - **Real Edges**：重建的控制流边（A -> B，不是 A -> dispatcher -> B）
@@ -430,7 +455,7 @@ python -m beaconflow.cli deflatten `
 
 #### 反平坦化工作原理
 
-1. **识别 dispatcher**：高频执行 + 多前驱/多后继的块被标记为 dispatcher
+1. **识别 dispatcher**：默认 strict 模式只把高频且同时具备多前驱/多后继形态的块标记为 dispatcher
 2. **过滤 dispatcher**：从执行流中移除 dispatcher 块
 3. **重建真实边**：如果原始流是 `A -> dispatcher -> B`，则真实边是 `A -> B`
 4. **输出干净执行流**：只包含真实块和真实边的执行脊柱
@@ -439,7 +464,7 @@ python -m beaconflow.cli deflatten `
 
 - 一次运行只覆盖一条路径，需要多次运行（不同输入）才能还原完整 CFG
 - 不提供状态变量值（需要更丰富的 trace，如寄存器/内存值）
-- dispatcher 识别基于启发式，可能误判（可调整 `--dispatcher-min-hits` 等阈值）
+- dispatcher 识别仍基于启发式，可能误判；默认 `--dispatcher-mode strict` 会降低热点循环/状态机误判，必要时可调整 `--dispatcher-mode` 和 `--dispatcher-min-*` 阈值
 
 ### 合并多次反平坦化结果（deflatten-merge）
 

@@ -6,7 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from beaconflow.analysis import diff_flow, rank_input_branches
+from beaconflow.analysis import deflatten_flow, diff_flow, rank_input_branches
+from beaconflow.analysis.ai_digest import compact_report, infer_report_kind
 from beaconflow.cli import _mutated_inputs, _parse_mutate_positions, _seed_from_mutate_format
 from beaconflow.coverage import load_address_log, load_drcov
 from beaconflow.mcp.server import TOOLS
@@ -34,6 +35,19 @@ def _coverage(addresses: list[int]) -> CoverageData:
     )
 
 
+def _loop_metadata() -> ProgramMetadata:
+    blocks = (
+        BasicBlock(0x1000, 0x1004, (0x1010,)),
+        BasicBlock(0x1010, 0x1014, (0x1000, 0x1020)),
+        BasicBlock(0x1020, 0x1024, ()),
+    )
+    return ProgramMetadata(
+        input_path="loop.exe",
+        image_base=0,
+        functions=(Function("loop", 0x1000, 0x1030, blocks),),
+    )
+
+
 class ParserTests(unittest.TestCase):
     def test_qemu_address_log_parser_supports_common_formats(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -51,6 +65,16 @@ class ParserTests(unittest.TestCase):
             )
             coverage = load_address_log(path, min_address=0x1000, max_address=0x1030)
             self.assertEqual([block.absolute_start for block in coverage.blocks], [0x1000, 0x1010, 0x1020])
+            self.assertEqual(coverage.trace_mode, "exec,nochain")
+            self.assertEqual(coverage.hit_count_precision, "exact")
+
+    def test_qemu_in_asm_hit_counts_are_marked_translation_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "in_asm.log"
+            path.write_text("0x00001000: addi.d $sp,$sp,-16\n0x00001010: ret\n", encoding="utf-8")
+            coverage = load_address_log(path)
+            self.assertEqual(coverage.trace_mode, "in_asm")
+            self.assertEqual(coverage.hit_count_precision, "translation-log")
 
     def test_drcov_parser_reads_v5_module_and_bb_table(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,6 +100,8 @@ class AnalysisTests(unittest.TestCase):
         bad = _coverage([0x1000, 0x1010, 0x1030])
         good = _coverage([0x1000, 0x1020, 0x1030])
         result = diff_flow(metadata, bad, good)
+        self.assertEqual(result["ai_digest"]["task"], "flow_diff")
+        self.assertTrue(result["ai_digest"]["top_findings"])
         right_blocks = result["ai_report"]["user_only_right_blocks"]
         self.assertIn({"function": "check", "block_start": "0x1020"}, right_blocks)
 
@@ -86,8 +112,44 @@ class AnalysisTests(unittest.TestCase):
         good = _coverage([0x1000, 0x1020, 0x1030])
         result = rank_input_branches(metadata, [bad, better, good], labels=["bad", "better", "good"], roles=["bad", "better", "good"])
         self.assertGreater(result["summary"]["ranked_branch_points"], 0)
+        self.assertEqual(result["ai_digest"]["task"], "branch_rank")
+        self.assertEqual(result["ai_digest"]["recommended_actions"][0]["kind"], "open_disassembly")
         self.assertEqual(result["ranked_branches"][0]["block"], "check:0x1000")
         self.assertGreaterEqual(result["ranked_branches"][0]["new_successors_vs_baseline"], 1)
+
+    def test_strict_dispatcher_mode_does_not_remove_hot_loop(self) -> None:
+        metadata = _loop_metadata()
+        coverage = _coverage(([0x1000, 0x1010] * 10) + [0x1020])
+        strict = deflatten_flow(metadata, coverage, dispatcher_mode="strict")
+        aggressive = deflatten_flow(metadata, coverage, dispatcher_mode="aggressive")
+        self.assertEqual(strict["summary"]["dispatcher_blocks"], 0)
+        self.assertGreaterEqual(aggressive["summary"]["dispatcher_blocks"], 1)
+        self.assertTrue(any(item["warnings"] for item in aggressive["dispatcher_candidates"]))
+
+    def test_deflatten_warns_when_qemu_in_asm_counts_are_used(self) -> None:
+        metadata = _loop_metadata()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "in_asm.log"
+            path.write_text("\n".join(["0x00001000: nop", "0x00001010: nop", "0x00001020: ret"]), encoding="utf-8")
+            coverage = load_address_log(path)
+            result = deflatten_flow(metadata, coverage)
+            self.assertEqual(result["summary"]["hit_count_precision"], "translation-log")
+            self.assertEqual(result["data_quality"]["hit_count_precision"], "translation-log")
+            self.assertTrue(any("exec,nochain" in warning for warning in result["warnings"]))
+            self.assertEqual(result["ai_digest"]["recommended_actions"][0]["kind"], "recollect_trace")
+
+    def test_ai_summary_compacts_existing_report(self) -> None:
+        metadata = _metadata()
+        result = rank_input_branches(
+            metadata,
+            [_coverage([0x1000, 0x1010, 0x1030]), _coverage([0x1000, 0x1020, 0x1030])],
+            labels=["bad", "good"],
+            roles=["bad", "good"],
+        )
+        self.assertEqual(infer_report_kind(result), "branch_rank")
+        compact = compact_report("branch_rank", result, max_findings=1)
+        self.assertEqual(len(compact["ai_digest"]["top_findings"]), 1)
+        self.assertNotIn("ranked_branches", compact)
 
 
 class QemuExploreInputTests(unittest.TestCase):
@@ -162,7 +224,7 @@ class QemuExploreInputTests(unittest.TestCase):
 
 class McpTests(unittest.TestCase):
     def test_tools_list_contains_analysis_entry_points(self) -> None:
-        for name in ["analyze_flow", "diff_flow", "qemu_explore", "branch_rank", "recover_state_transitions"]:
+        for name in ["analyze_flow", "diff_flow", "qemu_explore", "branch_rank", "recover_state_transitions", "ai_summary"]:
             self.assertIn(name, TOOLS)
             self.assertIn("inputSchema", TOOLS[name])
 
