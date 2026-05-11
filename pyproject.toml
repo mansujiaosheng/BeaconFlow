@@ -3,7 +3,9 @@ name = "beaconflow"
 version = "0.1.0"
 description = "Headless IDA coverage and control-flow analysis tools for AI agents."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "pyyaml>=6.0",
+]
 
 [project.optional-dependencies]
 mcp = ["mcp>=1.0.0"]
@@ -15,4 +17,10 @@ beaconflow-mcp = "beaconflow.mcp.server:main"
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["beaconflow*"]
+
+[tool.setuptools.package-data]
+beaconflow = ["analysis/*.yaml"]
 
