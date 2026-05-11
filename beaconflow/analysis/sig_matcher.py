@@ -68,13 +68,12 @@ def _match_name_patterns(name: str, patterns: list[str]) -> bool:
 def _match_instruction_patterns(instructions: tuple[str, ...], patterns: list[str]) -> list[str]:
     matched = []
     for insn in instructions:
-        insn_upper = insn.upper()
         for pat in patterns:
             try:
-                if re.search(pat, insn_upper):
+                if re.search(pat, insn, re.IGNORECASE):
                     matched.append(f"insn:{insn.strip()}")
             except re.error:
-                if pat.upper() in insn_upper:
+                if pat.lower() in insn.lower():
                     matched.append(f"insn:{insn.strip()}")
     return matched
 
@@ -114,6 +113,7 @@ def match_signatures(
     vm_sigs = lib.get("vm_sigs", {})
     packer_sigs = lib.get("packer_sigs", {})
     anti_debug_sigs = lib.get("anti_debug_sigs", {})
+    wasm_sigs = lib.get("wasm_sigs", {})
 
     for func in metadata.functions:
         for block in func.blocks:
@@ -233,6 +233,32 @@ def match_signatures(
                         function=func.name,
                     ))
 
+            # WASM 特征匹配
+            for wasm_name, sig in wasm_sigs.items():
+                wasm_evidence: list[str] = []
+
+                insn_patterns = sig.get("instruction_patterns", [])
+                if insn_patterns:
+                    insn_matches = _match_instruction_patterns(ctx.instructions, insn_patterns)
+                    wasm_evidence.extend(insn_matches)
+
+                const_sigs = sig.get("constant_signatures", [])
+                if const_sigs:
+                    const_matches = _match_constant_signatures(ctx.constants, const_sigs)
+                    wasm_evidence.extend(const_matches)
+
+                min_match = sig.get("min_match", 1)
+                if len(wasm_evidence) >= min_match:
+                    confidence = "high" if len(wasm_evidence) >= 3 else "medium"
+                    matches.append(SignatureMatch(
+                        category="wasm",
+                        name=wasm_name,
+                        confidence=confidence,
+                        evidence=wasm_evidence,
+                        address=block.start,
+                        function=func.name,
+                    ))
+
     # Packer IDs 特殊匹配（基于字符串）
     packer_ids = packer_sigs.get("packer_ids", {})
     for packer_name, sig in packer_ids.items():
@@ -286,7 +312,7 @@ def sig_match_to_markdown(result: dict[str, Any]) -> str:
         "",
     ]
 
-    for category in ("crypto", "vm", "packer", "packer_id", "anti_debug"):
+    for category in ("crypto", "vm", "wasm", "packer", "packer_id", "anti_debug"):
         cat_matches = [m for m in matches if m["category"] == category]
         if not cat_matches:
             continue

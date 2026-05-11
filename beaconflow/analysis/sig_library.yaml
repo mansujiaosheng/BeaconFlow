@@ -337,3 +337,51 @@ anti_debug_sigs:
       - "window_name_check"      # 窗口名检测
       - "registry_check"         # 注册表检测
       - "file_existence_check"   # 文件存在检测
+
+# WASM 特有特征（匹配 WASM 指令格式）
+wasm_sigs:
+  # WASM 中的 TEA/XTEA 特征
+  wasm_tea:
+    instruction_patterns:
+      - "i32\\.shl$"
+      - "i32\\.shr_[su]$"
+      - "i32\\.xor$"
+    constant_signatures:
+      - 0x9e3779b9
+    min_match: 2
+
+  # WASM 中的 AES 特征
+  wasm_aes:
+    instruction_patterns:
+      - "i32\\.shl$"
+      - "i32\\.xor$"
+    constant_signatures:
+      - 0x63
+      - 0x7c
+    min_match: 2
+
+  # WASM 中的 RC4 特征
+  wasm_rc4:
+    instruction_patterns:
+      - "i32\\.add$"
+      - "i32\\.and$"
+      - "i32\\.xor$"
+    min_match: 2
+
+  # WASM 中的 XOR 解密循环
+  wasm_xor_decrypt:
+    instruction_patterns:
+      - "i32\\.xor"
+      - "i32\\.store8"
+      - "i32\\.add"
+      - "i32\\.ne"
+      - "br_if"
+    min_match: 3
+
+  # WASM VM 解释器特征
+  wasm_vm:
+    instruction_patterns:
+      - "br_table"
+      - "i32\\.load8_u"
+      - "i32\\.and"
+    min_match: 2
