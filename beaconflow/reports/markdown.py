@@ -169,6 +169,176 @@ def flow_to_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def deflatten_merge_to_markdown(result: dict[str, Any]) -> str:
+    summary = result.get("summary", {})
+    lines = [
+        "# BeaconFlow Deflatten Merge Report",
+        "",
+        "## Summary",
+        "",
+        f"- Total traces merged: {summary.get('total_traces', 0)}",
+        f"- Total real blocks (union): {summary.get('total_real_blocks', 0)}",
+        f"- Total real edges (union): {summary.get('total_real_edges', 0)}",
+        f"- Total dispatcher blocks: {summary.get('total_dispatcher_blocks', 0)}",
+        f"- Total branch points: {summary.get('total_branch_points', 0)}",
+        f"- Total merge points: {summary.get('total_merge_points', 0)}",
+        f"- Common edges (all traces): {summary.get('common_edges', 0)}",
+        f"- Input-dependent edges: {summary.get('input_dependent_edges', 0)}",
+        "",
+    ]
+
+    per_trace = result.get("per_trace_summary", [])
+    if per_trace:
+        lines.extend(["## Per-Trace Summary", ""])
+        lines.append("| Trace | Original | Dispatcher | Real Blocks | Real Edges | Branch Points |")
+        lines.append("| --- | ---: | ---: | ---: | ---: | ---: |")
+        for item in per_trace:
+            lines.append(
+                f"| `{item['label']}` | {item['original_blocks']} | {item['dispatcher_blocks']} | "
+                f"{item['real_blocks']} | {item['real_edges']} | {item['real_branch_points']} |"
+            )
+        lines.append("")
+
+    dispatchers = result.get("dispatcher_blocks", [])
+    if dispatchers:
+        lines.extend(["## Dispatcher Blocks (Union)", ""])
+        for block in dispatchers[:30]:
+            lines.append(f"- `{block}`")
+        if len(dispatchers) > 30:
+            lines.append(f"... {len(dispatchers) - 30} more dispatcher blocks")
+        lines.append("")
+
+    real_cfg = result.get("real_cfg", {})
+
+    branch_points = real_cfg.get("branch_points", [])
+    if branch_points:
+        lines.extend(["## Branch Points (Real CFG)", ""])
+        for item in branch_points:
+            succs = ", ".join(f"`{s}`" for s in item["successors"])
+            lines.append(f"- `{item['block']}` -> [{succs}] ({item['successor_count']} successors)")
+        lines.append("")
+
+    merge_points = real_cfg.get("merge_points", [])
+    if merge_points:
+        lines.extend(["## Merge Points (Real CFG)", ""])
+        for item in merge_points:
+            preds = ", ".join(f"`{s}`" for s in item["predecessors"])
+            lines.append(f"- `{item['block']}` <- [{preds}] ({item['predecessor_count']} predecessors)")
+        lines.append("")
+
+    common_path = result.get("common_path", {})
+    common_edges = common_path.get("edges", [])
+    if common_edges:
+        lines.extend(["## Common Path (All Traces)", "", f"*{common_path.get('description', '')}*", ""])
+        for item in common_edges[:30]:
+            lines.append(f"- `{item['from']}` -> `{item['to']}` hits={item['total_hits']} covered_by={item['coverage_ratio']}")
+        if len(common_edges) > 30:
+            lines.append(f"... {len(common_edges) - 30} more common edges")
+        lines.append("")
+
+    input_dep = result.get("input_dependent_path", {})
+    input_edges = input_dep.get("edges", [])
+    if input_edges:
+        lines.extend(["## Input-Dependent Path (Key Branches)", "", f"*{input_dep.get('description', '')}*", ""])
+        for item in input_edges[:30]:
+            lines.append(f"- `{item['from']}` -> `{item['to']}` hits={item['total_hits']} covered_by={item['coverage_ratio']}")
+        if len(input_edges) > 30:
+            lines.append(f"... {len(input_edges) - 30} more input-dependent edges")
+        lines.append("")
+
+    edges = real_cfg.get("edges", [])
+    if edges:
+        lines.extend(["## All Real Edges (Top 30)", ""])
+        for item in edges[:30]:
+            lines.append(f"- `{item['from']}` -> `{item['to']}` hits={item['total_hits']} covered_by={item['coverage_ratio']}")
+        lines.append("")
+
+    blocks = real_cfg.get("blocks", [])
+    if blocks:
+        lines.extend(["## All Real Blocks (Top 30)", ""])
+        for item in blocks[:30]:
+            lines.append(f"- `{item['block']}` hits={item['total_hits']} covered_by={item['coverage_ratio']}")
+        lines.append("")
+
+    lines.extend(["## How to Use This Report", ""])
+    lines.append("- **Common Path** edges are input-independent; they execute regardless of input.")
+    lines.append("- **Input-Dependent Path** edges are the key: they differ between traces and reveal branching logic.")
+    lines.append("- **Branch Points** show where the program makes decisions; cross-reference with input-dependent edges.")
+    lines.append("- **Merge Points** show where different paths converge; useful for understanding loop/function exits.")
+    lines.append("- Use `flow-diff` for detailed two-trace comparison; use `deflatten-merge` for multi-trace overview.")
+
+    return "\n".join(lines) + "\n"
+
+
+def state_transitions_to_markdown(result: dict[str, Any]) -> str:
+    summary = result.get("summary", {})
+    ai = result.get("ai_interpretation", {})
+    lines = [
+        "# BeaconFlow State Transition Recovery",
+        "",
+        "## Summary",
+        "",
+        f"- Total traces: {summary.get('total_traces', 0)}",
+        f"- Total real blocks: {summary.get('total_real_blocks', 0)}",
+        f"- Total dispatcher blocks: {summary.get('total_dispatcher_blocks', 0)}",
+        f"- Total state transitions: {summary.get('total_state_transitions', 0)}",
+        f"- Deterministic transitions: {summary.get('deterministic_transitions', 0)}",
+        f"- Input-dependent transitions: {summary.get('input_dependent_transitions', 0)}",
+        f"- Branch blocks (multi-successor): {summary.get('branch_blocks', 0)}",
+        "",
+    ]
+
+    branch_blocks = result.get("branch_blocks", [])
+    if branch_blocks:
+        lines.extend(["## Branch Blocks (State Variable Decision Points)", ""])
+        for bb in branch_blocks:
+            lines.append(f"### `{bb['block']}` ({bb['successor_count']} successors, {bb['type']})")
+            for succ in bb["successors"]:
+                lines.append(f"- -> `{succ['block']}` covered_by={succ['coverage_ratio']} traces={succ['covered_by']}")
+            lines.append("")
+
+    det = result.get("deterministic_transitions", [])
+    if det:
+        lines.extend(["## Deterministic Transitions (State Variable = Constant)", ""])
+        lines.append("*After these real blocks, the dispatcher always jumps to the same next block.*")
+        lines.append("")
+        for item in det[:30]:
+            lines.append(f"- `{item['from_block']}` -> `{item['to_block']}` ratio={item['coverage_ratio']}")
+        if len(det) > 30:
+            lines.append(f"... {len(det) - 30} more deterministic transitions")
+        lines.append("")
+
+    inp = result.get("input_dependent_transitions", [])
+    if inp:
+        lines.extend(["## Input-Dependent Transitions (State Variable = Branch Condition)", ""])
+        lines.append("*After these real blocks, the dispatcher jumps to different blocks depending on input. The state variable is set by a conditional branch.*")
+        lines.append("")
+        for item in inp[:30]:
+            lines.append(f"- `{item['from_block']}` -> `{item['to_block']}` ratio={item['coverage_ratio']} traces={item['observed_in_traces']}")
+        if len(inp) > 30:
+            lines.append(f"... {len(inp) - 30} more input-dependent transitions")
+        lines.append("")
+
+    table = result.get("state_transition_table", [])
+    if table:
+        lines.extend(["## State Transition Table", ""])
+        for row in table:
+            lines.append(f"### `{row['block']}`")
+            for target, info in row["transitions"].items():
+                lines.append(f"  -> `{target}`: traces={info['traces']} ratio={info['ratio']}")
+            lines.append("")
+
+    lines.extend(["## AI Interpretation", ""])
+    for item in ai.get("how_to_read", []):
+        lines.append(f"- {item}")
+    lines.append("")
+    lines.extend(["## Next Steps", ""])
+    for item in ai.get("next_steps", []):
+        lines.append(f"- {item}")
+
+    return "\n".join(lines) + "\n"
+
+
 def flow_diff_to_markdown(result: dict[str, Any]) -> str:
     summary = result["summary"]
     ai = result["ai_report"]

@@ -352,24 +352,14 @@ def _build_ai_report(
     }
 
 
-def analyze_flow(
+def _map_coverage(
     metadata: ProgramMetadata,
     coverage: CoverageData,
-    max_events: int = 0,
     focus_function: str | None = None,
     address_start: int | None = None,
     address_end: int | None = None,
-) -> dict[str, Any]:
-    """Map a drcov BB table to an ordered execution-flow report.
-
-    DynamoRIO drcov logs basic block entries in the order they were observed.
-    This function keeps that order, maps target-module blocks back to IDA
-    functions/basic blocks, and emits both raw and consecutive-deduplicated flow.
-
-    address_start/address_end: 只保留此地址范围内的覆盖率事件，
-    用于聚焦分析某个函数或地址区间。
-    """
-
+) -> tuple[list[MappedBlock], list[MappedBlock], int, int, int]:
+    """将覆盖率块映射到 metadata 的函数/基本块，返回 (mapped, compressed, skipped, unmapped_fn, unmapped_bb)。"""
     mapped: list[MappedBlock] = []
     skipped_module_events = 0
     unmapped_function_events = 0
@@ -403,6 +393,31 @@ def analyze_flow(
         mapped = [event for event in mapped if _matches_focus(event, focus_function)]
 
     compressed = _compress_consecutive(mapped)
+    return mapped, compressed, skipped_module_events, unmapped_function_events, unmapped_block_events
+
+
+def analyze_flow(
+    metadata: ProgramMetadata,
+    coverage: CoverageData,
+    max_events: int = 0,
+    focus_function: str | None = None,
+    address_start: int | None = None,
+    address_end: int | None = None,
+) -> dict[str, Any]:
+    """Map a drcov BB table to an ordered execution-flow report.
+
+    DynamoRIO drcov logs basic block entries in the order they were observed.
+    This function keeps that order, maps target-module blocks back to IDA
+    functions/basic blocks, and emits both raw and consecutive-deduplicated flow.
+
+    address_start/address_end: 只保留此地址范围内的覆盖率事件，
+    用于聚焦分析某个函数或地址区间。
+    """
+
+    mapped, compressed, skipped_module_events, unmapped_function_events, unmapped_block_events = _map_coverage(
+        metadata, coverage, focus_function=focus_function, address_start=address_start, address_end=address_end,
+    )
+
     transitions = Counter(_transition_key(left, right) for left, right in zip(compressed, compressed[1:]))
 
     function_order: list[dict[str, Any]] = []
@@ -585,15 +600,11 @@ def deflatten_flow(
     3. 重建真实边：A -> dispatcher -> B 变成 A -> B
     4. 输出"干净的"执行流
     """
-    flow_result = analyze_flow(
-        metadata, coverage,
-        focus_function=focus_function,
-        address_start=address_start,
-        address_end=address_end,
+    mapped, compressed, skipped_module_events, unmapped_function_events, unmapped_block_events = _map_coverage(
+        metadata, coverage, focus_function=focus_function, address_start=address_start, address_end=address_end,
     )
 
-    compressed_events: list[dict[str, Any]] = flow_result["flow"]
-    if not compressed_events:
+    if not compressed:
         return {
             "summary": {
                 "error": "no mapped events in the target range",
@@ -604,24 +615,6 @@ def deflatten_flow(
             },
         }
 
-    # 重建 MappedBlock 列表
-    mapped: list[MappedBlock] = []
-    for index, block in enumerate(coverage.blocks):
-        address = _static_address(metadata, coverage, block)
-        if address is None:
-            continue
-        if address_start is not None and address < address_start:
-            continue
-        if address_end is not None and address >= address_end:
-            continue
-        function = _find_function(metadata, address)
-        basic_block = _find_basic_block(function, address)
-        mapped.append(MappedBlock(event_index=index, address=address, size=block.size, function=function, block=basic_block))
-
-    if focus_function:
-        mapped = [e for e in mapped if _matches_focus(e, focus_function)]
-
-    compressed = _compress_consecutive(mapped)
     hot_blocks = Counter(event.key for event in mapped)
 
     # 识别 dispatcher 块
@@ -635,8 +628,7 @@ def deflatten_flow(
     # 从压缩流中过滤 dispatcher，重建真实边
     real_events = [e for e in compressed if e.key not in dispatcher_keys]
 
-    # 重建真实边：如果原始流是 A -> D1 -> D2 -> B（D1, D2 是 dispatcher），
-    # 则真实边是 A -> B
+    # 重建真实边
     real_edges: list[tuple[MappedBlock, MappedBlock]] = []
     last_real: MappedBlock | None = None
     for event in compressed:
@@ -693,17 +685,14 @@ def deflatten_flow(
     # dispatcher 块详情
     dispatcher_details = []
     for key in sorted(dispatcher_keys, key=lambda k: (-hot_blocks.get(k, 0), k[1])):
-        # 计算真实前驱：压缩流中，dispatcher 前一个非 dispatcher 块
         pred_set: set[tuple[str, int]] = set()
         succ_set: set[tuple[str, int]] = set()
         for idx in range(len(compressed)):
             if compressed[idx].key == key:
-                # 前驱：往前找最近的非 dispatcher 块
                 for j in range(idx - 1, -1, -1):
                     if compressed[j].key not in dispatcher_keys:
                         pred_set.add(compressed[j].key)
                         break
-                # 后继：往后找最近的非 dispatcher 块
                 for j in range(idx + 1, len(compressed)):
                     if compressed[j].key not in dispatcher_keys:
                         succ_set.add(compressed[j].key)
@@ -714,6 +703,52 @@ def deflatten_flow(
             "real_predecessors": len(pred_set),
             "real_successors": len(succ_set),
         })
+
+    # 构建原始 flow_result（用于兼容）
+    transitions = Counter(_transition_key(left, right) for left, right in zip(compressed, compressed[1:]))
+    function_order: list[dict[str, Any]] = []
+    seen_functions: set[int] = set()
+    for event in compressed:
+        if not event.function or event.function.start in seen_functions:
+            continue
+        seen_functions.add(event.function.start)
+        function_order.append({"name": event.function.name, "start": hex_addr(event.function.start)})
+
+    flow_limit = len(compressed)
+    ai_report = _build_ai_report(compressed, transitions, hot_blocks, function_order, flow_limit)
+
+    flow_result = {
+        "summary": {
+            "raw_target_events": len(mapped),
+            "compressed_events": len(compressed),
+            "unique_blocks": len(set(e.key for e in mapped)),
+            "unique_transitions": len(transitions),
+            "functions_seen": len(function_order),
+            "truncated": False,
+            "focus_function": focus_function,
+        },
+        "diagnostics": {
+            "skipped_non_target_module_events": skipped_module_events,
+            "unmapped_function_events": unmapped_function_events,
+            "unmapped_basic_block_events": unmapped_block_events,
+            "mapped_target_events": len(mapped),
+        },
+        "ai_report": ai_report,
+        "function_order": function_order,
+        "flow": [event.to_json() for event in compressed],
+        "hot_blocks": [
+            {"function": key[0], "block_start": hex_addr(key[1]), "hits": hits}
+            for key, hits in hot_blocks.most_common(50)
+        ],
+        "transitions": [
+            {
+                "from": {"function": left[0], "block_start": hex_addr(left[1])},
+                "to": {"function": right[0], "block_start": hex_addr(right[1])},
+                "hits": hits,
+            }
+            for (left, right), hits in transitions.most_common(100)
+        ],
+    }
 
     return {
         "summary": {
@@ -741,4 +776,359 @@ def deflatten_flow(
             for key, hits in real_hot_blocks.most_common(50)
         ],
         "original_flow_result": flow_result,
+    }
+
+
+def deflatten_merge(
+    metadata: ProgramMetadata,
+    coverages: list[CoverageData],
+    labels: list[str] | None = None,
+    focus_function: str | None = None,
+    address_start: int | None = None,
+    address_end: int | None = None,
+    dispatcher_min_hits: int = 2,
+    dispatcher_min_pred: int = 2,
+    dispatcher_min_succ: int = 2,
+) -> dict[str, Any]:
+    """合并多次 deflatten 结果，还原完整真实 CFG。
+
+    对每个 coverage 分别做 deflatten，然后合并所有真实边和真实块，
+    标注每条边被哪些 trace 覆盖，从而还原完整的控制流图。
+    """
+    if not coverages:
+        return {"summary": {"error": "no coverage data provided"}}
+
+    if labels is None:
+        labels = [f"trace{i}" for i in range(len(coverages))]
+
+    per_trace: list[dict[str, Any]] = []
+    all_real_edges: Counter[tuple[tuple[str, int], tuple[str, int]]] = Counter()
+    all_real_blocks: Counter[tuple[str, int]] = Counter()
+    all_dispatcher_blocks: set[tuple[str, int]] = set()
+    edge_sources: dict[tuple[tuple[str, int], tuple[str, int]], list[str]] = {}
+    block_sources: dict[tuple[str, int], list[str]] = {}
+
+    for idx, (coverage, label) in enumerate(zip(coverages, labels)):
+        result = deflatten_flow(
+            metadata, coverage,
+            focus_function=focus_function,
+            address_start=address_start,
+            address_end=address_end,
+            dispatcher_min_hits=dispatcher_min_hits,
+            dispatcher_min_pred=dispatcher_min_pred,
+            dispatcher_min_succ=dispatcher_min_succ,
+        )
+        summary = result.get("summary", {})
+        per_trace.append({
+            "label": label,
+            "original_blocks": summary.get("original_blocks", 0),
+            "dispatcher_blocks": summary.get("dispatcher_blocks", 0),
+            "real_blocks": summary.get("real_blocks", 0),
+            "real_edges": summary.get("real_edges", 0),
+            "real_branch_points": summary.get("real_branch_points", 0),
+        })
+
+        # 合并 dispatcher 块
+        for block_str in result.get("dispatcher_blocks", []):
+            key = _parse_key(block_str)
+            all_dispatcher_blocks.add(key)
+
+        # 合并真实边
+        for edge in result.get("real_edges", []):
+            left = _parse_key(edge["from"])
+            right = _parse_key(edge["to"])
+            edge_key = (left, right)
+            all_real_edges[edge_key] += edge.get("hits", 1)
+            edge_sources.setdefault(edge_key, []).append(label)
+
+        # 合并真实块
+        for block in result.get("real_hot_blocks", []):
+            key = _parse_key(block["block"])
+            all_real_blocks[key] += block.get("hits", 1)
+            block_sources.setdefault(key, []).append(label)
+
+        # 也加入没有在 hot_blocks 中但出现在 spine 中的块
+        for block_str in result.get("real_execution_spine", []):
+            key = _parse_key(block_str)
+            if key not in all_real_blocks:
+                all_real_blocks[key] += 1
+                block_sources.setdefault(key, []).append(label)
+
+    # 构建完整的真实 CFG
+    # 出度/入度
+    real_out: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    real_in: dict[tuple[str, int], set[tuple[str, int]]] = {}
+    for (left, right) in all_real_edges:
+        real_out.setdefault(left, set()).add(right)
+        real_in.setdefault(right, set()).add(left)
+
+    # 分支点（出度 > 1）
+    branch_points = []
+    for key in sorted(real_out, key=lambda k: (-len(real_out[k]), k[1])):
+        targets = real_out[key]
+        if len(targets) > 1:
+            branch_points.append({
+                "block": _format_key(key),
+                "successors": sorted([_format_key(t) for t in targets]),
+                "successor_count": len(targets),
+                "covered_by_traces": len(set(s for t in targets for s in edge_sources.get((key, t), []))),
+            })
+
+    # 汇合点（入度 > 1）
+    merge_points = []
+    for key in sorted(real_in, key=lambda k: (-len(real_in[k]), k[1])):
+        sources = real_in[key]
+        if len(sources) > 1:
+            merge_points.append({
+                "block": _format_key(key),
+                "predecessors": sorted([_format_key(s) for s in sources]),
+                "predecessor_count": len(sources),
+            })
+
+    # 块覆盖度统计
+    total_traces = len(coverages)
+    block_coverage = []
+    for key in sorted(all_real_blocks, key=lambda k: (-all_real_blocks[k], k[1])):
+        sources = block_sources.get(key, [])
+        unique_sources = list(dict.fromkeys(sources))
+        block_coverage.append({
+            "block": _format_key(key),
+            "total_hits": all_real_blocks[key],
+            "covered_by": unique_sources,
+            "coverage_ratio": f"{len(unique_sources)}/{total_traces}",
+        })
+
+    # 边覆盖度统计
+    edge_coverage = []
+    for (left, right), hits in all_real_edges.most_common(200):
+        sources = edge_sources.get((left, right), [])
+        unique_sources = list(dict.fromkeys(sources))
+        edge_coverage.append({
+            "from": _format_key(left),
+            "to": _format_key(right),
+            "total_hits": hits,
+            "covered_by": unique_sources,
+            "coverage_ratio": f"{len(unique_sources)}/{total_traces}",
+        })
+
+    # 只被部分 trace 覆盖的边（输入相关的分支）
+    input_dependent_edges = [
+        e for e in edge_coverage
+        if len(dict.fromkeys(edge_sources.get((_parse_key(e["from"]), _parse_key(e["to"])), []))) < total_traces
+    ]
+
+    # 所有 trace 都覆盖的边（公共路径）
+    common_edges = [
+        e for e in edge_coverage
+        if len(dict.fromkeys(edge_sources.get((_parse_key(e["from"]), _parse_key(e["to"])), []))) == total_traces
+    ]
+
+    return {
+        "summary": {
+            "total_traces": total_traces,
+            "total_real_blocks": len(all_real_blocks),
+            "total_real_edges": len(all_real_edges),
+            "total_dispatcher_blocks": len(all_dispatcher_blocks),
+            "total_branch_points": len(branch_points),
+            "total_merge_points": len(merge_points),
+            "common_edges": len(common_edges),
+            "input_dependent_edges": len(input_dependent_edges),
+        },
+        "per_trace_summary": per_trace,
+        "dispatcher_blocks": sorted([_format_key(k) for k in all_dispatcher_blocks]),
+        "real_cfg": {
+            "blocks": block_coverage[:100],
+            "edges": edge_coverage[:100],
+            "branch_points": branch_points[:30],
+            "merge_points": merge_points[:30],
+        },
+        "common_path": {
+            "description": "Edges covered by ALL traces (input-independent)",
+            "edges": common_edges[:50],
+        },
+        "input_dependent_path": {
+            "description": "Edges NOT covered by all traces (input-dependent, key for understanding different behaviors)",
+            "edges": input_dependent_edges[:50],
+        },
+    }
+
+
+def _parse_key(formatted: str) -> tuple[str, int]:
+    """将 _format_key 的输出解析回 (function_name, address) 元组。"""
+    if ":" in formatted:
+        parts = formatted.rsplit(":", 1)
+        try:
+            return (parts[0], int(parts[1], 16))
+        except ValueError:
+            return (formatted, 0)
+    try:
+        return ("", int(formatted, 16))
+    except ValueError:
+        return (formatted, 0)
+
+
+def recover_state_transitions(
+    metadata: ProgramMetadata,
+    coverages: list[CoverageData],
+    labels: list[str] | None = None,
+    focus_function: str | None = None,
+    address_start: int | None = None,
+    address_end: int | None = None,
+    dispatcher_min_hits: int = 2,
+    dispatcher_min_pred: int = 2,
+    dispatcher_min_succ: int = 2,
+) -> dict[str, Any]:
+    """从多次执行 trace 中恢复状态转移表。
+
+    在平坦化控制流中，dispatcher 通过状态变量决定跳转目标。
+    本函数通过观察"真实块 -> dispatcher -> 真实块"链路，推断：
+    - 确定性转移：真实块 A 之后 dispatcher 总是跳到 B（A 设置状态变量为固定值）
+    - 输入相关转移：真实块 A 之后 dispatcher 可能跳到 B 或 C（取决于输入）
+
+    这比 deflatten_merge 更进一步：不仅知道有哪些边，还知道每条边的
+    "来源真实块"和"目标真实块"之间的确定性关系。
+    """
+    if not coverages:
+        return {"summary": {"error": "no coverage data provided"}}
+
+    if labels is None:
+        labels = [f"trace{i}" for i in range(len(coverages))]
+
+    total_traces = len(coverages)
+
+    # 对每个 trace 做 deflatten，收集状态转移信息
+    # state_transitions: (real_block_key) -> { next_real_block_key: [trace_labels] }
+    state_transitions: dict[tuple[str, int], dict[tuple[str, int], list[str]]] = {}
+    all_dispatcher_keys: set[tuple[str, int]] = set()
+    all_real_blocks: set[tuple[str, int]] = set()
+
+    for idx, (coverage, label) in enumerate(zip(coverages, labels)):
+        mapped, compressed, _, _, _ = _map_coverage(
+            metadata, coverage,
+            focus_function=focus_function,
+            address_start=address_start,
+            address_end=address_end,
+        )
+
+        if not compressed:
+            continue
+
+        hot_blocks = Counter(event.key for event in mapped)
+        dispatcher_keys = _identify_dispatchers(
+            compressed, hot_blocks,
+            min_hits=dispatcher_min_hits,
+            min_pred=dispatcher_min_pred,
+            min_succ=dispatcher_min_succ,
+        )
+        all_dispatcher_keys.update(dispatcher_keys)
+
+        # 构建"真实块 -> 下一个真实块"的转移
+        # 在压缩流中，跳过 dispatcher 块，记录连续真实块之间的转移
+        last_real: tuple[str, int] | None = None
+        for event in compressed:
+            if event.key in dispatcher_keys:
+                continue
+            all_real_blocks.add(event.key)
+            if last_real is not None:
+                transitions_from_last = state_transitions.setdefault(last_real, {})
+                targets = transitions_from_last.setdefault(event.key, [])
+                targets.append(label)
+            last_real = event.key
+
+    # 分析每个真实块的状态转移
+    deterministic_transitions: list[dict[str, Any]] = []
+    input_dependent_transitions: list[dict[str, Any]] = []
+    unknown_transitions: list[dict[str, Any]] = []
+
+    for block_key in sorted(state_transitions, key=lambda k: (k[0], k[1])):
+        targets = state_transitions[block_key]
+        target_list = sorted(targets.items(), key=lambda item: (-len(item[1]), item[0][1]))
+
+        for target_key, trace_labels in target_list:
+            unique_traces = list(dict.fromkeys(trace_labels))
+            coverage_count = len(unique_traces)
+            entry = {
+                "from_block": _format_key(block_key),
+                "to_block": _format_key(target_key),
+                "observed_in_traces": unique_traces,
+                "coverage_ratio": f"{coverage_count}/{total_traces}",
+            }
+
+            if len(target_list) == 1:
+                # 只有一个目标 -> 确定性转移
+                deterministic_transitions.append(entry)
+            elif coverage_count == total_traces:
+                # 多个目标，但这条边被所有 trace 覆盖 -> 确定性（所有输入都走这条路）
+                deterministic_transitions.append(entry)
+            else:
+                # 输入相关转移
+                input_dependent_transitions.append(entry)
+
+    # 对于有多个后继的真实块，标注为分支块
+    branch_blocks: list[dict[str, Any]] = []
+    for block_key, targets in sorted(state_transitions.items(), key=lambda item: (-len(item[1]), item[0][1])):
+        if len(targets) > 1:
+            # 统计每个后继被哪些 trace 覆盖
+            successors = []
+            for target_key, trace_labels in sorted(targets.items(), key=lambda item: (-len(item[1]), item[0][1])):
+                unique_traces = list(dict.fromkeys(trace_labels))
+                successors.append({
+                    "block": _format_key(target_key),
+                    "covered_by": unique_traces,
+                    "coverage_ratio": f"{len(unique_traces)}/{total_traces}",
+                })
+            branch_blocks.append({
+                "block": _format_key(block_key),
+                "successor_count": len(targets),
+                "successors": successors,
+                "type": "input-dependent" if any(
+                    len(dict.fromkeys(targets[t])) < total_traces for t in targets
+                ) else "deterministic",
+            })
+
+    # 构建状态转移表（矩阵形式，方便 AI 阅读）
+    # 只包含有多个后继的分支块
+    transition_table: list[dict[str, Any]] = []
+    for bb in branch_blocks:
+        row = {
+            "block": bb["block"],
+            "transitions": {},
+        }
+        for succ in bb["successors"]:
+            row["transitions"][succ["block"]] = {
+                "traces": succ["covered_by"],
+                "ratio": succ["coverage_ratio"],
+            }
+        transition_table.append(row)
+
+    return {
+        "summary": {
+            "total_traces": total_traces,
+            "total_real_blocks": len(all_real_blocks),
+            "total_dispatcher_blocks": len(all_dispatcher_keys),
+            "total_state_transitions": sum(len(t) for t in state_transitions.values()),
+            "deterministic_transitions": len(deterministic_transitions),
+            "input_dependent_transitions": len(input_dependent_transitions),
+            "branch_blocks": len(branch_blocks),
+        },
+        "state_transition_table": transition_table[:30],
+        "deterministic_transitions": deterministic_transitions[:50],
+        "input_dependent_transitions": input_dependent_transitions[:50],
+        "branch_blocks": branch_blocks[:30],
+        "dispatcher_blocks": sorted([_format_key(k) for k in all_dispatcher_keys])[:50],
+        "ai_interpretation": {
+            "purpose": "State variable recovery for control-flow-flattened binaries.",
+            "how_to_read": [
+                "deterministic_transitions: real block A always leads to real block B (state variable set to fixed value).",
+                "input_dependent_transitions: real block A leads to different blocks depending on input (state variable depends on branch condition).",
+                "branch_blocks: real blocks with multiple successors in the real CFG; these are where input-dependent decisions happen.",
+                "state_transition_table: compact matrix showing which trace inputs lead to which successors at each branch block.",
+            ],
+            "next_steps": [
+                "For deterministic transitions, the real block sets the state variable to a constant before jumping to the dispatcher.",
+                "For input-dependent transitions, the real block contains a conditional branch that sets the state variable based on input.",
+                "Open each branch_block in IDA/Ghidra to find the comparison instruction that determines the state variable value.",
+                "The state variable is typically compared against constants in the dispatcher block; match those constants to the successor blocks.",
+            ],
+        },
     }

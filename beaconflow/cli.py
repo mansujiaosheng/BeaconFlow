@@ -5,13 +5,13 @@ import json
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, diff_coverage, diff_flow
+from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, recover_state_transitions
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
-from beaconflow.reports import coverage_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown
+from beaconflow.reports import coverage_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
 
 
 def _cmd_analyze(args: argparse.Namespace) -> int:
@@ -86,6 +86,62 @@ def _cmd_deflatten(args: argparse.Namespace) -> int:
         dispatcher_min_succ=args.dispatcher_min_succ,
     )
     text = deflatten_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_deflatten_merge(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    if args.address_log:
+        coverages = [
+            _load_address_log_arg(p, args) for p in args.address_log
+        ]
+    else:
+        coverages = [load_drcov(p) for p in args.coverage]
+    labels = args.label if args.label else None
+    address_start, address_end = _resolve_address_range(args, metadata)
+    result = deflatten_merge(
+        metadata, coverages,
+        labels=labels,
+        focus_function=args.focus_function,
+        address_start=address_start,
+        address_end=address_end,
+        dispatcher_min_hits=args.dispatcher_min_hits,
+        dispatcher_min_pred=args.dispatcher_min_pred,
+        dispatcher_min_succ=args.dispatcher_min_succ,
+    )
+    text = deflatten_merge_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_recover_state(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    if args.address_log:
+        coverages = [
+            _load_address_log_arg(p, args) for p in args.address_log
+        ]
+    else:
+        coverages = [load_drcov(p) for p in args.coverage]
+    labels = args.label if args.label else None
+    address_start, address_end = _resolve_address_range(args, metadata)
+    result = recover_state_transitions(
+        metadata, coverages,
+        labels=labels,
+        focus_function=args.focus_function,
+        address_start=address_start,
+        address_end=address_end,
+        dispatcher_min_hits=args.dispatcher_min_hits,
+        dispatcher_min_pred=args.dispatcher_min_pred,
+        dispatcher_min_succ=args.dispatcher_min_succ,
+    )
+    text = state_transitions_to_markdown(result) if args.format == "markdown" else json.dumps(result, indent=2)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -531,6 +587,44 @@ def build_parser() -> argparse.ArgumentParser:
     deflatten.add_argument("--format", choices=("json", "markdown"), default="json")
     deflatten.add_argument("--output")
     deflatten.set_defaults(func=_cmd_deflatten)
+
+    deflatten_merge_parser = sub.add_parser("deflatten-merge", help="Merge multiple deflatten results to restore complete real CFG.")
+    deflatten_merge_parser.add_argument("--metadata", required=True)
+    coverage_source = deflatten_merge_parser.add_mutually_exclusive_group(required=True)
+    coverage_source.add_argument("--coverage", nargs="+", help="Two or more drcov log files from different inputs.")
+    coverage_source.add_argument("--address-log", nargs="+", help="Two or more QEMU address log files from different inputs.")
+    deflatten_merge_parser.add_argument("--label", action="append", help="Label for each coverage file (in order). Can be repeated.")
+    deflatten_merge_parser.add_argument("--focus-function", help="Only analyze events in this function.")
+    deflatten_merge_parser.add_argument("--from", dest="from_", help="Start address or function name for range filtering (inclusive).")
+    deflatten_merge_parser.add_argument("--to", dest="to", help="End address or function name for range filtering (exclusive).")
+    deflatten_merge_parser.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
+    deflatten_merge_parser.add_argument("--address-min", help="Keep only address-log events at or above this address.")
+    deflatten_merge_parser.add_argument("--address-max", help="Keep only address-log events below this address.")
+    deflatten_merge_parser.add_argument("--dispatcher-min-hits", type=int, default=2, help="Min hits for a block to be considered dispatcher (default: 2).")
+    deflatten_merge_parser.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
+    deflatten_merge_parser.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
+    deflatten_merge_parser.add_argument("--format", choices=("json", "markdown"), default="json")
+    deflatten_merge_parser.add_argument("--output")
+    deflatten_merge_parser.set_defaults(func=_cmd_deflatten_merge)
+
+    recover_state_parser = sub.add_parser("recover-state", help="Recover state transition table from multiple traces for CFF deflattening.")
+    recover_state_parser.add_argument("--metadata", required=True)
+    state_source = recover_state_parser.add_mutually_exclusive_group(required=True)
+    state_source.add_argument("--coverage", nargs="+", help="Two or more drcov log files from different inputs.")
+    state_source.add_argument("--address-log", nargs="+", help="Two or more QEMU address log files from different inputs.")
+    recover_state_parser.add_argument("--label", action="append", help="Label for each coverage file (in order). Can be repeated.")
+    recover_state_parser.add_argument("--focus-function", help="Only analyze events in this function.")
+    recover_state_parser.add_argument("--from", dest="from_", help="Start address or function name for range filtering (inclusive).")
+    recover_state_parser.add_argument("--to", dest="to", help="End address or function name for range filtering (exclusive).")
+    recover_state_parser.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
+    recover_state_parser.add_argument("--address-min", help="Keep only address-log events at or above this address.")
+    recover_state_parser.add_argument("--address-max", help="Keep only address-log events below this address.")
+    recover_state_parser.add_argument("--dispatcher-min-hits", type=int, default=2, help="Min hits for a block to be considered dispatcher (default: 2).")
+    recover_state_parser.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
+    recover_state_parser.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
+    recover_state_parser.add_argument("--format", choices=("json", "markdown"), default="json")
+    recover_state_parser.add_argument("--output")
+    recover_state_parser.set_defaults(func=_cmd_recover_state)
 
     collect = sub.add_parser("collect", help="Run a target under bundled DynamoRIO drcov. Supports both PE (Windows) and ELF (via WSL on Windows).")
     collect.add_argument("--target", required=True, help="Executable to run (PE or ELF).")

@@ -6,13 +6,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from beaconflow.analysis import analyze_coverage, analyze_flow, diff_coverage, diff_flow
+from beaconflow.analysis import analyze_coverage, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, recover_state_transitions
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
-from beaconflow.reports import coverage_to_markdown, flow_diff_to_markdown, flow_to_markdown
+from beaconflow.reports import coverage_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -192,6 +192,68 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "timeout": {"type": "integer", "default": 600, "description": "Ghidra headless timeout in seconds."},
             },
             "required": ["target_path", "output_path"],
+        },
+    },
+    "deflatten_flow": {
+        "description": "Remove dispatcher blocks from execution flow and reconstruct real control flow edges. Key tool for control-flow-flattening (CFF) deflattening.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string"},
+                "coverage_path": {"type": "string", "description": "Path to a drcov log file."},
+                "address_log_path": {"type": "string", "description": "Path to a QEMU address log file."},
+                "address_min": {"type": "string"},
+                "address_max": {"type": "string"},
+                "block_size": {"type": "integer", "default": 4},
+                "focus_function": {"type": "string"},
+                "dispatcher_min_hits": {"type": "integer", "default": 2, "description": "Min hits for a block to be considered dispatcher."},
+                "dispatcher_min_pred": {"type": "integer", "default": 2, "description": "Min predecessors for dispatcher."},
+                "dispatcher_min_succ": {"type": "integer", "default": 2, "description": "Min successors for dispatcher."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+            },
+            "required": ["metadata_path"],
+        },
+    },
+    "deflatten_merge": {
+        "description": "Merge multiple deflatten results from different inputs to restore the complete real CFG. Identifies common paths and input-dependent branches.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string"},
+                "coverage_paths": {"type": "array", "items": {"type": "string"}, "description": "Two or more drcov log files from different inputs."},
+                "address_log_paths": {"type": "array", "items": {"type": "string"}, "description": "Two or more QEMU address log files from different inputs."},
+                "labels": {"type": "array", "items": {"type": "string"}, "description": "Label for each coverage file (in order)."},
+                "address_min": {"type": "string"},
+                "address_max": {"type": "string"},
+                "block_size": {"type": "integer", "default": 4},
+                "focus_function": {"type": "string"},
+                "dispatcher_min_hits": {"type": "integer", "default": 2},
+                "dispatcher_min_pred": {"type": "integer", "default": 2},
+                "dispatcher_min_succ": {"type": "integer", "default": 2},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+            },
+            "required": ["metadata_path"],
+        },
+    },
+    "recover_state_transitions": {
+        "description": "Recover state transition table from multiple traces for CFF deflattening. Identifies deterministic vs input-dependent state variable transitions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string"},
+                "coverage_paths": {"type": "array", "items": {"type": "string"}, "description": "Two or more drcov log files from different inputs."},
+                "address_log_paths": {"type": "array", "items": {"type": "string"}, "description": "Two or more QEMU address log files from different inputs."},
+                "labels": {"type": "array", "items": {"type": "string"}, "description": "Label for each coverage file (in order)."},
+                "address_min": {"type": "string"},
+                "address_max": {"type": "string"},
+                "block_size": {"type": "integer", "default": 4},
+                "focus_function": {"type": "string"},
+                "dispatcher_min_hits": {"type": "integer", "default": 2},
+                "dispatcher_min_pred": {"type": "integer", "default": 2},
+                "dispatcher_min_succ": {"type": "integer", "default": 2},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+            },
+            "required": ["metadata_path"],
         },
     },
 }
@@ -505,6 +567,76 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             script_path=arguments.get("script_path"),
             timeout=arguments.get("timeout") or 600,
         )
+        return _tool_result(result)
+
+    if name == "deflatten_flow":
+        metadata = load_metadata(arguments["metadata_path"])
+        coverage = _load_flow_source(arguments, "coverage_path", "address_log_path")
+        result = deflatten_flow(
+            metadata, coverage,
+            focus_function=arguments.get("focus_function"),
+            dispatcher_min_hits=arguments.get("dispatcher_min_hits", 2),
+            dispatcher_min_pred=arguments.get("dispatcher_min_pred", 2),
+            dispatcher_min_succ=arguments.get("dispatcher_min_succ", 2),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(deflatten_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "deflatten_merge":
+        metadata = load_metadata(arguments["metadata_path"])
+        if arguments.get("address_log_paths"):
+            coverages = [
+                load_address_log(
+                    p,
+                    block_size=arguments.get("block_size", 4),
+                    min_address=_parse_optional_int(arguments.get("address_min")),
+                    max_address=_parse_optional_int(arguments.get("address_max")),
+                )
+                for p in arguments["address_log_paths"]
+            ]
+        elif arguments.get("coverage_paths"):
+            coverages = [load_drcov(p) for p in arguments["coverage_paths"]]
+        else:
+            raise ValueError("coverage_paths or address_log_paths is required")
+        result = deflatten_merge(
+            metadata, coverages,
+            labels=arguments.get("labels"),
+            focus_function=arguments.get("focus_function"),
+            dispatcher_min_hits=arguments.get("dispatcher_min_hits", 2),
+            dispatcher_min_pred=arguments.get("dispatcher_min_pred", 2),
+            dispatcher_min_succ=arguments.get("dispatcher_min_succ", 2),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(deflatten_merge_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "recover_state_transitions":
+        metadata = load_metadata(arguments["metadata_path"])
+        if arguments.get("address_log_paths"):
+            coverages = [
+                load_address_log(
+                    p,
+                    block_size=arguments.get("block_size", 4),
+                    min_address=_parse_optional_int(arguments.get("address_min")),
+                    max_address=_parse_optional_int(arguments.get("address_max")),
+                )
+                for p in arguments["address_log_paths"]
+            ]
+        elif arguments.get("coverage_paths"):
+            coverages = [load_drcov(p) for p in arguments["coverage_paths"]]
+        else:
+            raise ValueError("coverage_paths or address_log_paths is required")
+        result = recover_state_transitions(
+            metadata, coverages,
+            labels=arguments.get("labels"),
+            focus_function=arguments.get("focus_function"),
+            dispatcher_min_hits=arguments.get("dispatcher_min_hits", 2),
+            dispatcher_min_pred=arguments.get("dispatcher_min_pred", 2),
+            dispatcher_min_succ=arguments.get("dispatcher_min_succ", 2),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(state_transitions_to_markdown(result))
         return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")

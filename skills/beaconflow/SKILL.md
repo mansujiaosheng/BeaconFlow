@@ -144,6 +144,8 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `analyze_coverage` | Map drcov blocks to IDA/Ghidra-exported functions and basic blocks. |
 | `analyze_flow` | Map a drcov or address-log file to ordered basic-block flow and real transitions. |
 | `deflatten_flow` | Remove dispatcher blocks from execution flow, reconstruct real control flow edges. Key tool for CFF deflattening. |
+| `deflatten_merge` | Merge multiple deflatten results to restore complete real CFG. Identifies common paths and input-dependent branches. |
+| `recover_state_transitions` | Recover state transition table from multiple traces. Identifies deterministic vs input-dependent state variable transitions for CFF deflattening. |
 | `record_flow` | Run a target once and return the ordered executed flow. Prefer for flattened CFG triage. |
 | `diff_coverage` | Compare two coverage runs at function level. |
 | `diff_flow` | Compare two runs at block/edge level. Outputs only-left/only-right blocks, edges, and hit-count deltas. |
@@ -168,7 +170,8 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 - Register values, memory values, and branch conditions require a richer trace source such as Tenet, Frida, Pin, or custom DynamoRIO instrumentation.
 - Treat uncovered security-sensitive functions as fuzzing or input-generation targets.
 - For flattened control flow, use `deflatten_flow` to remove dispatcher blocks and reconstruct real edges. The Real Execution Spine shows the actual control flow without dispatcher noise.
-- To fully deflatten a function, run with multiple inputs and merge the deflatten results to cover all paths.
+- To fully deflatten a function, run with multiple inputs and merge the deflatten results to cover all paths. Use `deflatten_merge` to combine multiple traces and identify common vs input-dependent edges.
+- Use `recover_state_transitions` to go further: it builds a state transition table showing which real blocks set the state variable to a constant (deterministic) vs which set it based on input (input-dependent). This is the key to understanding the flattened control flow's state machine.
 - In `qemu_explore`, focus on inputs with high `new_blocks_vs_baseline` — they reached code not seen by the baseline input and are most likely to reveal different logic paths.
 - Different `output_fingerprint` with no path novelty usually means data-state differences, not control-flow differences.
 - QEMU `-d in_asm` hit counts should not be treated as precise loop iteration counts; use `-d exec,nochain` or a stronger trace for that.

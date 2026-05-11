@@ -46,7 +46,7 @@ def collect_qemu_trace(
     output.mkdir(parents=True, exist_ok=True)
     target_path = Path(target).resolve()
     run_directory = Path(run_cwd).resolve() if run_cwd else target_path.parent
-    log_path = output / f"{name or target_path.name}.{trace_mode}.qemu.log"
+    log_path = output / f"{name or target_path.name}.{trace_mode.replace(',', '_')}.qemu.log"
     args = _clean_target_args(target_args or [])
     command, backend = _build_qemu_command(
         target_path=target_path,
