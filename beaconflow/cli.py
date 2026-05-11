@@ -6,7 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_roles, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -14,7 +14,7 @@ from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.models import hex_addr
-from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, roles_to_markdown, state_transitions_to_markdown
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -352,6 +352,75 @@ def _inspect_decision_point_to_markdown(dp: dict[str, Any]) -> str:
         if ctx.get("constants"):
             lines.append(f"### Constants: {', '.join(f'`{c}`' for c in ctx['constants'])}")
             lines.append("")
+    return "\n".join(lines) + "\n"
+
+
+def _cmd_detect_roles(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    result = analyze_roles(
+        metadata,
+        rules_path=args.rules,
+        focus_function=args.focus_function,
+        min_score=args.min_score,
+    )
+    text = _fmt_markdown(args.format, roles_to_markdown, result)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_inspect_role(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    addr = None
+    if args.address:
+        addr = int(args.address, 16) if args.address.startswith("0x") else int(args.address)
+    result = inspect_role(metadata, function_name=args.name, address=addr, rules_path=args.rules)
+    if result is None:
+        print("No role detected for the specified function.", file=sys.stderr)
+        return 1
+    if args.format == "markdown":
+        text = _inspect_role_to_markdown(result)
+    else:
+        text = json.dumps(result, indent=2)
+    print(text)
+    return 0
+
+
+def _inspect_role_to_markdown(result: dict[str, Any]) -> str:
+    lines = [
+        f"# Role: `{result['role']}` for `{result['function']}`",
+        "",
+        f"- Address: `{result['address']}`",
+        f"- Confidence: `{result['confidence']}`",
+        f"- Score: {result['score']}",
+        "",
+    ]
+    if result.get("evidence"):
+        lines.append("## Evidence")
+        lines.append("")
+        for ev in result["evidence"]:
+            lines.append(f"- {ev}")
+        lines.append("")
+    if result.get("matched_rules"):
+        lines.append(f"## Matched Rules: {', '.join(f'`{r}`' for r in result['matched_rules'])}")
+        lines.append("")
+    if result.get("recommended_actions"):
+        lines.append("## Recommended Actions")
+        lines.append("")
+        for act in result["recommended_actions"]:
+            lines.append(f"- {act}")
+        lines.append("")
+    if result.get("related_blocks"):
+        lines.append(f"## Related Blocks: {', '.join(f'`{b}`' for b in result['related_blocks'])}")
+        lines.append("")
+    if result.get("related_decision_points"):
+        lines.append(f"## Related Decision Points: {', '.join(f'`{d}`' for d in result['related_decision_points'])}")
+        lines.append("")
+    if result.get("related_io_sites"):
+        lines.append(f"## Related I/O Sites: {', '.join(f'`{i}`' for i in result['related_io_sites'])}")
+        lines.append("")
     return "\n".join(lines) + "\n"
 
 
@@ -1151,6 +1220,23 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_dp.add_argument("--address", required=True, help="Block start address of the decision point (e.g. 0x1400014c7).")
     inspect_dp.add_argument("--format", choices=("json", "markdown"), default="markdown")
     inspect_dp.set_defaults(func=_cmd_inspect_decision_point)
+
+    detect_roles = sub.add_parser("detect-roles", help="Detect candidate roles for functions (validator, crypto, dispatcher, etc.) using configurable rules.")
+    detect_roles.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    detect_roles.add_argument("--rules", help="Path to custom role rules YAML file.")
+    detect_roles.add_argument("--focus-function", help="Only detect roles for this function (name or address).")
+    detect_roles.add_argument("--min-score", type=float, default=0.1, help="Minimum score threshold (default: 0.1).")
+    detect_roles.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    detect_roles.add_argument("--output")
+    detect_roles.set_defaults(func=_cmd_detect_roles)
+
+    inspect_role_cmd = sub.add_parser("inspect-role", help="Inspect the detected role for a specific function.")
+    inspect_role_cmd.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    inspect_role_cmd.add_argument("--name", help="Function name to inspect.")
+    inspect_role_cmd.add_argument("--address", help="Function start address to inspect (e.g. 0x401000).")
+    inspect_role_cmd.add_argument("--rules", help="Path to custom role rules YAML file.")
+    inspect_role_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    inspect_role_cmd.set_defaults(func=_cmd_inspect_role)
 
     ai_summary = sub.add_parser("ai-summary", help="Compact an existing BeaconFlow JSON report into an AI-first digest.")
     ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")

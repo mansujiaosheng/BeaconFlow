@@ -6,14 +6,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_roles, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
-from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, state_transitions_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, roles_to_markdown, state_transitions_to_markdown
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -342,6 +342,34 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
             },
             "required": ["metadata_path", "address"],
+        },
+    },
+    "detect_roles": {
+        "description": "Detect candidate roles for functions (validator, crypto_like, dispatcher, input_handler, success/failure_handler, anti_debug, etc.) using configurable rules based on name patterns, decision points, call patterns, and block features.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
+                "rules_path": {"type": "string", "description": "Path to custom role rules YAML file."},
+                "focus_function": {"type": "string", "description": "Only detect roles for this function (name or address)."},
+                "min_score": {"type": "number", "description": "Minimum score threshold (default: 0.1)."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+            },
+            "required": ["metadata_path"],
+        },
+    },
+    "inspect_role": {
+        "description": "Inspect the detected role for a specific function. Shows role, confidence, score, evidence, matched rules, and recommended actions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
+                "function_name": {"type": "string", "description": "Function name to inspect."},
+                "address": {"type": "string", "description": "Function start address to inspect (e.g. 0x401000)."},
+                "rules_path": {"type": "string", "description": "Path to custom role rules YAML file."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+            "required": ["metadata_path"],
         },
     },
 }
@@ -852,6 +880,31 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         result = inspect_decision_point(metadata, addr)
         if result is None:
             raise ValueError(f"No decision point found at {_hex_addr(addr)}")
+        return _tool_result(result)
+
+    if name == "detect_roles":
+        metadata = load_metadata(arguments["metadata_path"])
+        result = analyze_roles(
+            metadata,
+            rules_path=arguments.get("rules_path"),
+            focus_function=arguments.get("focus_function"),
+            min_score=arguments.get("min_score", 0.1),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(roles_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "inspect_role":
+        metadata = load_metadata(arguments["metadata_path"])
+        addr = _parse_optional_int(arguments.get("address"))
+        result = inspect_role(
+            metadata,
+            function_name=arguments.get("function_name"),
+            address=addr,
+            rules_path=arguments.get("rules_path"),
+        )
+        if result is None:
+            raise ValueError("No role detected for the specified function")
         return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")

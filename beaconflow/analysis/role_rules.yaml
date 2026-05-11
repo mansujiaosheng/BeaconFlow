@@ -1,0 +1,220 @@
+roles:
+  input_handler:
+    name_patterns:
+      - "read"
+      - "input"
+      - "scan"
+      - "getchar"
+      - "fgets"
+      - "gets"
+      - "recv"
+      - "scanf"
+    positive_features:
+      - "calls_io_function"
+      - "early_in_trace"
+    score_weight: 1.0
+
+  input_normalizer:
+    name_patterns:
+      - "normalize"
+      - "sanitize"
+      - "trim"
+      - "strip"
+      - "tolower"
+      - "toupper"
+      - "convert"
+    positive_features:
+      - "called_after_input"
+      - "no_decision_points"
+    score_weight: 0.8
+
+  validator:
+    name_patterns:
+      - "check"
+      - "verify"
+      - "validate"
+      - "auth"
+      - "verify"
+      - "judge"
+      - "test"
+    positive_features:
+      - "has_decision_points"
+      - "has_loop_like_edges"
+      - "return_controls_output"
+      - "path_diff_sensitive"
+      - "has_constants"
+      - "has_data_refs"
+      - "calls_string_compare"
+    negative_features:
+      - "runtime_noise"
+      - "library_function"
+    score_weight: 1.2
+
+  transformer:
+    name_patterns:
+      - "transform"
+      - "encode"
+      - "decode"
+      - "convert"
+      - "process"
+      - "apply"
+    positive_features:
+      - "no_decision_points"
+      - "has_loops"
+      - "has_constants"
+    score_weight: 0.7
+
+  crypto_like:
+    name_patterns:
+      - "encrypt"
+      - "decrypt"
+      - "hash"
+      - "cipher"
+      - "aes"
+      - "des"
+      - "rsa"
+      - "sha"
+      - "md5"
+      - "crc"
+      - "rc4"
+      - "base64"
+    positive_features:
+      - "many_bitwise_ops"
+      - "many_arithmetic_ops"
+      - "has_constants"
+      - "has_loops"
+      - "has_table_lookup"
+    score_weight: 1.0
+
+  dispatcher:
+    name_patterns:
+      - "dispatch"
+      - "switch"
+      - "route"
+      - "handler"
+    positive_features:
+      - "many_predecessors"
+      - "many_successors"
+      - "high_hit_count"
+      - "has_jump_table"
+    score_weight: 0.9
+
+  state_update:
+    name_patterns:
+      - "update"
+      - "set_state"
+      - "transition"
+      - "advance"
+    positive_features:
+      - "has_decision_points"
+      - "called_after_dispatcher"
+    score_weight: 0.6
+
+  success_handler:
+    name_patterns:
+      - "success"
+      - "pass"
+      - "accept"
+      - "grant"
+      - "win"
+      - "correct"
+      - "right"
+      - "ok"
+    positive_features:
+      - "only_in_success_trace"
+      - "calls_print_or_write"
+      - "no_decision_points"
+    score_weight: 1.0
+
+  failure_handler:
+    name_patterns:
+      - "fail"
+      - "error"
+      - "deny"
+      - "reject"
+      - "wrong"
+      - "invalid"
+      - "incorrect"
+    positive_features:
+      - "only_in_failure_trace"
+      - "calls_print_or_write"
+      - "no_decision_points"
+    score_weight: 1.0
+
+  anti_debug:
+    name_patterns:
+      - "antidebug"
+      - "check_debug"
+      - "detect_debug"
+      - "ptrace"
+      - "isdebugger"
+    positive_features:
+      - "calls_debug_api"
+      - "has_conditional_exit"
+    score_weight: 0.8
+
+  runtime_init:
+    name_patterns:
+      - "init"
+      - "setup"
+      - "ctor"
+      - "crt"
+      - "main"
+      - "entry"
+      - "_start"
+    positive_features:
+      - "first_in_trace"
+      - "calls_many_functions"
+      - "no_decision_points"
+    score_weight: 0.5
+
+  unknown_interesting:
+    name_patterns: []
+    positive_features:
+      - "has_decision_points"
+      - "path_diff_sensitive"
+      - "has_constants"
+    score_weight: 0.3
+
+io_functions:
+  - "scanf"
+  - "printf"
+  - "puts"
+  - "gets"
+  - "fgets"
+  - "getchar"
+  - "read"
+  - "write"
+  - "recv"
+  - "send"
+  - "fread"
+  - "fwrite"
+  - "fprintf"
+  - "sprintf"
+  - "snprintf"
+  - "cout"
+  - "cin"
+  - "endl"
+
+debug_api_functions:
+  - "ptrace"
+  - "IsDebuggerPresent"
+  - "CheckRemoteDebuggerPresent"
+  - "NtQueryInformationProcess"
+  - "anti_debug"
+
+string_compare_functions:
+  - "strcmp"
+  - "strncmp"
+  - "memcmp"
+  - "wcscmp"
+  - "wcsncmp"
+  - "strlen"
+
+library_prefixes:
+  - "__"
+  - "_IO_"
+  - "_Z"
+  - "std::"
+  - "operator"
+  - "GLIBC"

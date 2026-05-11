@@ -20,11 +20,19 @@ def _hex(value):
     return "0x{:x}".format(value)
 
 
+def _is_interesting_constant(val):
+    if val == 0:
+        return False
+    if val > 0xFFFFFFFF:
+        return False
+    if 0 < val < 4:
+        return False
+    return True
+
+
 def _extract_block_context(program, block_start, block_end, succs_list, all_block_starts):
     from ghidra.program.model.symbol import RefType
     listing = program.getListing()
-    ref_manager = program.getReferenceManager()
-    data_manager = program.getListing()
 
     instructions = []
     calls = []
@@ -45,11 +53,20 @@ def _extract_block_context(program, block_start, block_end, succs_list, all_bloc
         from ghidra.program.model.listing import Instruction
         if not isinstance(cu, Instruction):
             continue
-        mnemonic = cu.getMnemonicString()
-        op_str = cu.toString().split(None, 1)
-        operand = op_str[1] if len(op_str) > 1 else ""
-        instructions.append("{} {}".format(mnemonic, operand).strip())
 
+        # 生成干净的汇编文本
+        mnemonic = cu.getMnemonicString()
+        # 构建操作数字符串
+        op_parts = []
+        for i in range(cu.getNumOperands()):
+            op_str = cu.getOperandRepresentation(i)
+            op_parts.append(op_str)
+        if op_parts:
+            instructions.append("{} {}".format(mnemonic, ", ".join(op_parts)))
+        else:
+            instructions.append(mnemonic)
+
+        # 分析引用
         for ref in cu.getReferencesFrom():
             ref_type = ref.getReferenceType()
             target_addr = ref.getToAddress()
@@ -60,7 +77,12 @@ def _extract_block_context(program, block_start, block_end, succs_list, all_bloc
                 if func:
                     calls.append(func.getName())
                 else:
-                    calls.append(_hex(target_offset))
+                    # 尝试获取符号名
+                    sym = program.getSymbolTable().getPrimarySymbol(target_addr)
+                    if sym:
+                        calls.append(sym.getName())
+                    else:
+                        calls.append(_hex(target_offset))
             elif ref_type.isData():
                 data_at = listing.getDataAt(target_addr)
                 if data_at and data_at.hasStringValue():
@@ -72,12 +94,15 @@ def _extract_block_context(program, block_start, block_end, succs_list, all_bloc
                 if target_offset not in all_block_starts:
                     code_refs.append(_hex(target_offset))
 
+        # 提取操作数中的标量常量
         for i in range(cu.getNumOperands()):
-            op_obj = cu.getOpObjects(i)
-            for obj in op_obj:
-                if hasattr(obj, 'getValue') and isinstance(obj.getValue(), int):
+            op_objs = cu.getOpObjects(i)
+            for obj in op_objs:
+                # Ghidra 的标量常量类
+                class_name = obj.getClass().getSimpleName()
+                if class_name == "Scalar":
                     val = obj.getValue()
-                    if 1 <= val <= 0xFFFF and val not in constants:
+                    if isinstance(val, int) and _is_interesting_constant(val) and val not in constants:
                         constants.append(val)
 
     context = {}
@@ -152,6 +177,7 @@ def export_metadata(binary_path, output_path=None, project_location=None, projec
                     block_info["succs"].append(_hex(succ_start))
 
             if with_context:
+                # 构建前驱映射
                 pred_map = {}
                 for block_info in blocks:
                     for succ_hex in block_info["succs"]:
@@ -167,7 +193,7 @@ def export_metadata(binary_path, output_path=None, project_location=None, projec
                     )
                     preds = pred_map.get(start_offset, [])
                     if preds:
-                        ctx["predecessors"] = preds
+                        ctx["predecessors"] = list(dict.fromkeys(preds))
                     if block_info["succs"]:
                         ctx["successors"] = block_info["succs"]
                     if ctx:

@@ -28,6 +28,18 @@ def _image_base() -> int:
     return int(ida_ida.inf_get_min_ea())
 
 
+def _is_interesting_constant(val: int) -> bool:
+    # 过滤掉明显不是有意义常量的值
+    if val == 0:
+        return False
+    if val > 0xFFFFFFFF:
+        return False
+    # 过滤掉常见的小索引值
+    if 0 < val < 4:
+        return False
+    return True
+
+
 def _extract_block_context(func_start, block_start, block_end, succs_list, all_block_starts):
     instructions = []
     calls = []
@@ -44,10 +56,16 @@ def _extract_block_context(func_start, block_start, block_end, succs_list, all_b
             ea += 1
             continue
 
-        mnemonic = ida_ua.print_insn_mnem(ea)
-        disasm = ida_ua.generate_disasm_line(ea, 0)
+        # 生成干净的汇编文本（去除 IDA 自动注释）
+        disasm = ida_ua.generate_disasm_line(ea, ida_ua.GENDSM_FORCE_CODE)
         if disasm:
-            instructions.append(disasm.strip())
+            clean = disasm.strip()
+            # 去除 IDA 尾部自动生成的注释（; 开头的部分）
+            if ";" in clean:
+                # 保留用户注释但去除自动注释
+                parts = clean.split(";")
+                clean = parts[0].strip()
+            instructions.append(clean)
 
         for xref in idautils.XrefsFrom(ea, 0):
             target = xref.to
@@ -67,17 +85,26 @@ def _extract_block_context(func_start, block_start, block_end, succs_list, all_b
                 if target not in all_block_starts:
                     code_refs.append(_hex(target))
 
+        # 提取操作数中的立即数（包括内存偏移中的常量）
         for i in range(insn.nops):
             op = insn.ops[i]
             if op.type == ida_ua.o_void:
                 break
-            if op.type in (ida_ua.o_imm,):
+            # 立即数操作数
+            if op.type == ida_ua.o_imm:
                 val = op.value
-                if 1 <= val <= 0xFFFF and val not in constants:
+                if _is_interesting_constant(val) and val not in constants:
+                    constants.append(val)
+            # 内存偏移中的常量（如 [rbp+0x10] 中的 0x10）
+            elif op.type in (ida_ua.o_displ, ida_ua.o_phrase):
+                val = op.addr
+                # 只保留看起来像有意义常量的值
+                if _is_interesting_constant(val) and val not in constants:
                     constants.append(val)
 
         ea += length
 
+    # 前驱块
     pred_list = []
     for xref in idautils.XrefsTo(block_start, 0):
         if xref.type in (ida_xref.fl_JN, ida_xref.fl_JF, ida_xref.fl_CN, ida_xref.fl_CF, ida_xref.fl_F):
@@ -154,7 +181,7 @@ def export_metadata(output_path: str, with_context: bool = True) -> None:
     }
 
     with open(output_path, "w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
+        json.dump(data, handle, indent=2, ensure_ascii=False)
 
 
 def main() -> None:

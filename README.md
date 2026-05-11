@@ -834,6 +834,96 @@ python -m beaconflow.cli inspect-decision-point --metadata metadata.json --addre
 
 > **提示**：Decision Points 依赖 block context 中的指令信息。使用 Ghidra/IDA 导出 metadata 时默认包含 context。
 
+### 检测函数角色（Candidate Role Detector）
+
+`detect-roles` 命令通过可配置规则自动推断函数在程序中的角色，让 AI 不需要逐个分析函数就能快速定位关键逻辑。
+
+```powershell
+# 检测所有函数角色
+python -m beaconflow.cli detect-roles --metadata metadata.json --format markdown
+
+# 只检测某个函数
+python -m beaconflow.cli detect-roles --metadata metadata.json --focus-function check_flag --format json
+
+# 使用自定义规则文件
+python -m beaconflow.cli detect-roles --metadata metadata.json --rules my_rules.yaml
+
+# 设置最低分数阈值
+python -m beaconflow.cli detect-roles --metadata metadata.json --min-score 0.5
+```
+
+支持的角色类型：
+
+| 角色 | 说明 | 识别依据 |
+| --- | --- | --- |
+| `validator` | 核心校验函数 | 名称含 check/verify/validate + 有 decision points + 调用 strcmp 等 |
+| `crypto_like` | 加解密函数 | 名称含 encrypt/decrypt/hash + 大量位运算 + 常量 + 循环 |
+| `input_handler` | 输入处理函数 | 名称含 read/input + 调用 scanf/recv 等 I/O 函数 |
+| `dispatcher` | 状态分发函数 | 名称含 dispatch/handler + 多后继 + jump table |
+| `success_handler` | 成功输出函数 | 名称含 success/pass + 调用 printf/puts |
+| `failure_handler` | 失败输出函数 | 名称含 fail/error/deny + 调用 printf/puts |
+| `anti_debug` | 反调试函数 | 名称含 debug/ptrace + 调用调试检测 API |
+| `transformer` | 数据变换函数 | 名称含 transform/encode + 无 decision points + 有循环 |
+| `input_normalizer` | 输入标准化函数 | 名称含 normalize/trim + 在输入后调用 |
+| `state_update` | 状态更新函数 | 名称含 update/set_state + 在分发后调用 |
+| `runtime_init` | 运行时初始化 | 名称含 init/setup/main + 调用多个函数 |
+| `unknown_interesting` | 有趣的未知函数 | 有 decision points + 有常量 |
+
+输出示例：
+
+```markdown
+# BeaconFlow Candidate Role Detection
+
+- Total candidates: 6
+- High confidence: 4 | Medium: 2 | Low: 0
+
+## HIGH Confidence (4)
+
+### `check_flag` → `validator` (score: 1.2)
+- Name matches patterns: check
+- Contains decision points (cmp/test+jcc, cmovcc, setcc)
+- Calls string comparison: strcmp
+
+**Recommended actions:**
+- Trace input data flow into this function
+- Compare path differences between correct/wrong inputs
+- Inspect string comparison arguments for expected values
+```
+
+### 检查单个函数角色
+
+`inspect-role` 命令查看某个函数的角色详情：
+
+```powershell
+# 按函数名查看
+python -m beaconflow.cli inspect-role --metadata metadata.json --name check_flag
+
+# 按地址查看
+python -m beaconflow.cli inspect-role --metadata metadata.json --address 0x401000
+```
+
+输出包含角色、置信度、分数、证据、匹配规则、推荐操作和关联信息。
+
+### 自定义角色规则
+
+角色检测使用 YAML 配置文件，默认内置在 `beaconflow/analysis/role_rules.yaml`。可以通过 `--rules` 参数指定自定义规则：
+
+```yaml
+roles:
+  validator:
+    name_patterns:
+      - "check"
+      - "verify"
+    positive_features:
+      - "has_decision_points"
+      - "calls_string_compare"
+    negative_features:
+      - "runtime_noise"
+    score_weight: 1.2
+```
+
+> **提示**：Role Detector 依赖 block context 中的指令和调用信息。使用 Ghidra/IDA 导出 metadata 时默认包含 context。
+
 ---
 
 ## 完整案例：ACTF flagchecker（LoongArch）
@@ -975,6 +1065,8 @@ beaconflow-mcp
 | `inspect_function` | 查看函数及其所有基本块的详细上下文 |
 | `find_decision_points` | 查找并优先排序决策点（cmp+jcc、checker calls、cmovcc、setcc、jump tables） |
 | `inspect_decision_point` | 查看单个决策点的详细信息 |
+| `detect_roles` | 检测函数角色（validator、crypto、dispatcher、input_handler 等） |
+| `inspect_role` | 查看单个函数的角色详情 |
 
 ### `collect_drcov`
 
@@ -1186,6 +1278,31 @@ beaconflow-mcp
 ```
 
 返回指定地址的决策点详情，包含类型、优先级、比较/分支指令、后继块和关联的 block context。
+
+### `detect_roles`
+
+```json
+{
+  "metadata_path": "D:\\case\\metadata.json",
+  "focus_function": "check_flag",
+  "min_score": 0.1,
+  "format": "json"
+}
+```
+
+返回所有函数的角色检测结果，按分数降序排列。每个结果包含角色、置信度、分数、证据、匹配规则和推荐操作。
+
+### `inspect_role`
+
+```json
+{
+  "metadata_path": "D:\\case\\metadata.json",
+  "function_name": "check_flag",
+  "format": "markdown"
+}
+```
+
+返回指定函数的角色详情，包含角色、置信度、证据、推荐操作和关联信息。
 
 ---
 

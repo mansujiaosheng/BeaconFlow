@@ -71,7 +71,6 @@ def coverage_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
             lines.append(f"| `{item['name']}` | `{item['start']}` | {item['coverage_percent']}% |")
         return "\n".join(lines) + "\n"
 
-
     lines.extend(["## Covered Functions", "", "| Function | Address | Blocks | Coverage |", "| --- | --- | ---: | ---: |"])
 
     for item in result["covered_functions"][:100]:
@@ -734,5 +733,50 @@ def decision_points_to_markdown(result: dict[str, Any], brief: bool = False) -> 
         if len(items) > (20 if not brief else 5):
             lines.append(f"... {len(items) - (20 if not brief else 5)} more {priority} priority points")
         lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def roles_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
+    summary = result.get("summary", {})
+    candidates = result.get("candidates", [])
+    lines = [
+        "# BeaconFlow Candidate Role Detection",
+        "",
+        f"- Total candidates: {summary.get('total', 0)}",
+        f"- High confidence: {summary.get('confidence', {}).get('high', 0)} | Medium: {summary.get('confidence', {}).get('medium', 0)} | Low: {summary.get('confidence', {}).get('low', 0)}",
+        f"- Focus function: {summary.get('focus_function') or '<none>'}",
+        "",
+    ]
+
+    roles_found = summary.get("roles", {})
+    if roles_found:
+        lines.append("## Roles Summary")
+        lines.append("")
+        for role, count in sorted(roles_found.items(), key=lambda x: -x[1]):
+            lines.append(f"- `{role}`: {count} function(s)")
+        lines.append("")
+
+    confidence_order = ["high", "medium", "low"]
+    for conf in confidence_order:
+        items = [c for c in candidates if c["confidence"] == conf]
+        if not items:
+            continue
+        if brief and conf == "low" and (summary.get("confidence", {}).get("high", 0) + summary.get("confidence", {}).get("medium", 0)) > 0:
+            continue
+        lines.append(f"## {conf.upper()} Confidence ({len(items)})")
+        lines.append("")
+        for c in items[:20 if not brief else 10]:
+            lines.append(f"### `{c['function']}` → `{c['role']}` (score: {c['score']})")
+            lines.append("")
+            if c.get("evidence"):
+                for ev in c["evidence"][:5]:
+                    lines.append(f"- {ev}")
+            if c.get("recommended_actions"):
+                lines.append("")
+                lines.append("**Recommended actions:**")
+                for act in c["recommended_actions"][:3]:
+                    lines.append(f"- {act}")
+            lines.append("")
 
     return "\n".join(lines) + "\n"
