@@ -20,7 +20,84 @@ def _hex(value):
     return "0x{:x}".format(value)
 
 
-def export_metadata(binary_path, output_path=None, project_location=None, project_name=None):
+def _extract_block_context(program, block_start, block_end, succs_list, all_block_starts):
+    from ghidra.program.model.symbol import RefType
+    listing = program.getListing()
+    ref_manager = program.getReferenceManager()
+    data_manager = program.getListing()
+
+    instructions = []
+    calls = []
+    strings = []
+    constants = []
+    data_refs = []
+    code_refs = []
+
+    addr_factory = program.getAddressFactory()
+    start_addr = addr_factory.getDefaultAddressSpace().getAddress(block_start)
+    end_addr = addr_factory.getDefaultAddressSpace().getAddress(block_end)
+
+    code_unit_iter = listing.getCodeUnits(start_addr, True)
+    while code_unit_iter.hasNext():
+        cu = code_unit_iter.next()
+        if cu.getAddress().getOffset() >= block_end:
+            break
+        from ghidra.program.model.listing import Instruction
+        if not isinstance(cu, Instruction):
+            continue
+        mnemonic = cu.getMnemonicString()
+        op_str = cu.toString().split(None, 1)
+        operand = op_str[1] if len(op_str) > 1 else ""
+        instructions.append("{} {}".format(mnemonic, operand).strip())
+
+        for ref in cu.getReferencesFrom():
+            ref_type = ref.getReferenceType()
+            target_addr = ref.getToAddress()
+            target_offset = target_addr.getOffset()
+
+            if ref_type.isCall():
+                func = program.getFunctionManager().getFunctionContaining(target_addr)
+                if func:
+                    calls.append(func.getName())
+                else:
+                    calls.append(_hex(target_offset))
+            elif ref_type.isData():
+                data_at = listing.getDataAt(target_addr)
+                if data_at and data_at.hasStringValue():
+                    val = data_at.getValue()
+                    strings.append(str(val)[:200])
+                else:
+                    data_refs.append(_hex(target_offset))
+            elif ref_type.isFlow():
+                if target_offset not in all_block_starts:
+                    code_refs.append(_hex(target_offset))
+
+        for i in range(cu.getNumOperands()):
+            op_obj = cu.getOpObjects(i)
+            for obj in op_obj:
+                if hasattr(obj, 'getValue') and isinstance(obj.getValue(), int):
+                    val = obj.getValue()
+                    if 1 <= val <= 0xFFFF and val not in constants:
+                        constants.append(val)
+
+    context = {}
+    if instructions:
+        context["instructions"] = instructions
+    if calls:
+        context["calls"] = list(dict.fromkeys(calls))
+    if strings:
+        context["strings"] = list(dict.fromkeys(strings))
+    if constants:
+        context["constants"] = [_hex(c) for c in constants[:20]]
+    if data_refs:
+        context["data_refs"] = list(dict.fromkeys(data_refs))
+    if code_refs:
+        context["code_refs"] = list(dict.fromkeys(code_refs))
+
+    return context
+
+
+def export_metadata(binary_path, output_path=None, project_location=None, project_name=None, with_context=True):
     import pyghidra
 
     ghidra_dir = os.environ.get(
@@ -53,12 +130,14 @@ def export_metadata(binary_path, output_path=None, project_location=None, projec
 
             blocks = []
             addr_to_block = {}
+            block_start_set = set()
             code_blocks = block_model.getCodeBlocksContaining(body, monitor)
             while code_blocks.hasNext():
                 cb = code_blocks.next()
                 start = cb.getMinAddress().getOffset()
                 end = cb.getMaxAddress().getOffset() + 1
                 addr_to_block[start] = cb
+                block_start_set.add(start)
                 blocks.append({"start": _hex(start), "end": _hex(end), "succs": []})
 
             for block_info in blocks:
@@ -71,6 +150,28 @@ def export_metadata(binary_path, output_path=None, project_location=None, projec
                     dest = dest_iter.next()
                     succ_start = dest.getDestinationBlock().getMinAddress().getOffset()
                     block_info["succs"].append(_hex(succ_start))
+
+            if with_context:
+                pred_map = {}
+                for block_info in blocks:
+                    for succ_hex in block_info["succs"]:
+                        succ_offset = int(succ_hex, 16)
+                        pred_map.setdefault(succ_offset, []).append(block_info["start"])
+
+                for block_info in blocks:
+                    start_offset = int(block_info["start"], 16)
+                    end_offset = int(block_info["end"], 16)
+                    ctx = _extract_block_context(
+                        program, start_offset, end_offset,
+                        block_info["succs"], block_start_set,
+                    )
+                    preds = pred_map.get(start_offset, [])
+                    if preds:
+                        ctx["predecessors"] = preds
+                    if block_info["succs"]:
+                        ctx["successors"] = block_info["succs"]
+                    if ctx:
+                        block_info["context"] = ctx
 
             functions.append(
                 {

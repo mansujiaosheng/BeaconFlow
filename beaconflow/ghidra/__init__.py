@@ -61,9 +61,10 @@ def export_ghidra_metadata(
     script_path: str | Path | None = None,
     timeout: int | None = 600,
     backend: str = "pyghidra",
+    with_context: bool = True,
 ) -> dict[str, object]:
     if backend == "pyghidra":
-        return export_ghidra_metadata_pyghidra(target=target, output=output, project_dir=project_dir, project_name=project_name, timeout=timeout)
+        return export_ghidra_metadata_pyghidra(target=target, output=output, project_dir=project_dir, project_name=project_name, timeout=timeout, with_context=with_context)
     if backend != "headless":
         raise ValueError(f"unknown Ghidra export backend: {backend}")
 
@@ -136,6 +137,7 @@ def export_ghidra_metadata_pyghidra(
     project_dir: str | Path | None = None,
     project_name: str = "beaconflow_export",
     timeout: int | None = 600,
+    with_context: bool = True,
 ) -> dict[str, object]:
     """Export metadata through pyghidra, avoiding analyzeHeadless script loading."""
     if importlib.util.find_spec("pyghidra") is None:
@@ -146,7 +148,7 @@ def export_ghidra_metadata_pyghidra(
     target_path = Path(target).resolve()
     output_path = Path(output).resolve()
     work_dir = Path(project_dir).resolve() if project_dir else Path(tempfile.mkdtemp(prefix="beaconflow_pyghidra_"))
-    export_metadata(str(target_path), str(output_path), project_location=str(work_dir), project_name=project_name)
+    export_metadata(str(target_path), str(output_path), project_location=str(work_dir), project_name=project_name, with_context=with_context)
 
     from beaconflow.ida import load_metadata
     metadata = load_metadata(output_path)

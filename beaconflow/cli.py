@@ -412,6 +412,7 @@ def _cmd_export_ghidra(args: argparse.Namespace) -> int:
         script_path=args.script_path,
         timeout=args.timeout,
         backend=args.backend,
+        with_context=not args.no_context,
     )
     print(json.dumps(result, indent=2))
     return 0
@@ -1018,6 +1019,7 @@ def build_parser() -> argparse.ArgumentParser:
     export_ghidra.add_argument("--script-path", help="Path to ExportBeaconFlowMetadata.py. Default: ghidra_scripts/ in repo.")
     export_ghidra.add_argument("--backend", choices=("pyghidra", "headless"), default="pyghidra", help="Ghidra export backend. Default uses pyghidra; headless keeps the legacy analyzeHeadless script path.")
     export_ghidra.add_argument("--timeout", type=int, default=600, help="Ghidra headless timeout in seconds.")
+    export_ghidra.add_argument("--no-context", action="store_true", help="Skip block context extraction (instructions, calls, strings, etc.) for faster export.")
     export_ghidra.set_defaults(func=_cmd_export_ghidra)
 
     return parser
