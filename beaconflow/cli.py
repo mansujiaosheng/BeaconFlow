@@ -6,7 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_roles, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -14,7 +14,7 @@ from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.models import hex_addr
-from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, roles_to_markdown, state_transitions_to_markdown, value_trace_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -392,6 +392,34 @@ def _cmd_trace_values(args: argparse.Namespace) -> int:
         focus_function=args.focus_function,
     )
     text = _fmt_markdown(args.format, value_trace_to_markdown, result)
+    if args.output:
+        Path(args.output).write_text(text, encoding="utf-8")
+    else:
+        print(text)
+    return 0
+
+
+def _cmd_trace_compare(args: argparse.Namespace) -> int:
+    metadata = load_metadata(args.metadata)
+    executed_addrs = None
+    if args.coverage:
+        coverage = load_drcov(args.coverage)
+        executed_addrs = set()
+        for block in coverage.blocks:
+            if block.absolute_start is not None:
+                executed_addrs.add(block.absolute_start)
+    elif args.address_log:
+        addr_log = _load_address_log_path(args.address_log, args)
+        executed_addrs = set()
+        for block in addr_log.blocks:
+            if block.absolute_start is not None:
+                executed_addrs.add(block.absolute_start)
+    result = analyze_trace_compare(
+        metadata,
+        executed_addrs=executed_addrs,
+        focus_function=args.focus_function,
+    )
+    text = _fmt_markdown(args.format, trace_compare_to_markdown, result)
     if args.output:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
@@ -1278,6 +1306,19 @@ def build_parser() -> argparse.ArgumentParser:
     trace_values.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
     trace_values.add_argument("--output")
     trace_values.set_defaults(func=_cmd_trace_values)
+
+    trace_compare = sub.add_parser("trace-compare", help="Extract compare semantics at input check points (cmp/strcmp/memcmp/switch).")
+    trace_compare.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
+    trace_compare_source = trace_compare.add_mutually_exclusive_group()
+    trace_compare_source.add_argument("--coverage", help="DynamoRIO drcov coverage file (optional, for result inference).")
+    trace_compare_source.add_argument("--address-log", help="QEMU address log file (optional, for result inference).")
+    trace_compare.add_argument("--focus-function", help="Only extract compares in this function (name or address).")
+    trace_compare.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
+    trace_compare.add_argument("--address-min")
+    trace_compare.add_argument("--address-max")
+    trace_compare.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    trace_compare.add_argument("--output")
+    trace_compare.set_defaults(func=_cmd_trace_compare)
 
     ai_summary = sub.add_parser("ai-summary", help="Compact an existing BeaconFlow JSON report into an AI-first digest.")
     ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")

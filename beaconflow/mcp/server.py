@@ -6,14 +6,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_roles, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_roles, analyze_trace_compare, analyze_value_trace, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, find_decision_points, inspect_decision_point, inspect_role, rank_input_branches, recover_state_transitions
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
 from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
-from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, roles_to_markdown, state_transitions_to_markdown, value_trace_to_markdown
+from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, flow_diff_to_markdown, flow_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -381,6 +381,20 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "coverage_path": {"type": "string", "description": "Optional drcov coverage file for branch result inference."},
                 "address_log_path": {"type": "string", "description": "Optional QEMU address log for branch result inference."},
                 "focus_function": {"type": "string", "description": "Only trace values in this function (name or address)."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
+            },
+            "required": ["metadata_path"],
+        },
+    },
+    "trace_compare": {
+        "description": "Extract compare semantics at input check points. Identifies cmp reg/imm, cmp reg/reg, test, strcmp/strncmp/memcmp, strlen, and switch/jump table patterns. Outputs structured comparison information with inferred results.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON file."},
+                "coverage_path": {"type": "string", "description": "Optional drcov coverage file for result inference."},
+                "address_log_path": {"type": "string", "description": "Optional QEMU address log for result inference."},
+                "focus_function": {"type": "string", "description": "Only extract compares in this function (name or address)."},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "json"},
             },
             "required": ["metadata_path"],
@@ -946,6 +960,33 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         )
         if arguments.get("format") == "markdown":
             return _tool_result(value_trace_to_markdown(result))
+        return _tool_result(result)
+
+    if name == "trace_compare":
+        metadata = load_metadata(arguments["metadata_path"])
+        executed_addrs = None
+        if arguments.get("coverage_path"):
+            coverage = load_drcov(arguments["coverage_path"])
+            executed_addrs = set()
+            for block in coverage.blocks:
+                if block.absolute_start is not None:
+                    executed_addrs.add(block.absolute_start)
+        elif arguments.get("address_log_path"):
+            addr_log = load_address_log(
+                arguments["address_log_path"],
+                block_size=arguments.get("block_size", 4),
+            )
+            executed_addrs = set()
+            for block in addr_log.blocks:
+                if block.absolute_start is not None:
+                    executed_addrs.add(block.absolute_start)
+        result = analyze_trace_compare(
+            metadata,
+            executed_addrs=executed_addrs,
+            focus_function=arguments.get("focus_function"),
+        )
+        if arguments.get("format") == "markdown":
+            return _tool_result(trace_compare_to_markdown(result))
         return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")

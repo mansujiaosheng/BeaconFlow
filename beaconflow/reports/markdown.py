@@ -857,3 +857,77 @@ def value_trace_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
     lines.append("- **Dispatcher States** show switch-like dispatch blocks; the state variable hint suggests what controls the dispatch.")
 
     return "\n".join(lines) + "\n"
+
+
+def trace_compare_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
+    summary = result.get("summary", {})
+    compares = result.get("compares", [])
+    failed = result.get("failed_compares", [])
+    passed = result.get("passed_compares", [])
+    by_type = summary.get("by_type", {})
+    lines = [
+        "# BeaconFlow Trace Compare",
+        "",
+        f"- Total compare points: {summary.get('total', 0)}",
+        f"- Failed compares (not_equal): {summary.get('failed_compares', 0)}",
+        f"- Passed compares (equal): {summary.get('passed_compares', 0)}",
+        f"- Focus function: {summary.get('focus_function') or '<none>'}",
+        "",
+    ]
+
+    if by_type:
+        lines.extend(["## Compare Types", ""])
+        for ctype, count in sorted(by_type.items(), key=lambda x: -x[1]):
+            lines.append(f"- `{ctype}`: {count}")
+        lines.append("")
+
+    if failed:
+        lines.extend(["## Failed Compares (Input Check Failures)", ""])
+        lines.append("*These comparison points returned `not_equal`, meaning the input did not match the expected value. These are the most actionable for AI to fix the input.*")
+        lines.append("")
+        for item in failed[:20 if not brief else 5]:
+            func_info = f"`{item['function']}:` " if item.get("function") else ""
+            length_info = f" length={item['length']}" if item.get("length") is not None else ""
+            lines.append(
+                f"- {func_info}`{item['addr']}` type=`{item['type']}` "
+                f"left=`{item['left']}` right=`{item['right']}`{length_info}"
+            )
+        if len(failed) > (20 if not brief else 5):
+            lines.append(f"... {len(failed) - (20 if not brief else 5)} more failed compares")
+        lines.append("")
+
+    if passed and not brief:
+        lines.extend(["## Passed Compares", ""])
+        for item in passed[:10]:
+            func_info = f"`{item['function']}:` " if item.get("function") else ""
+            lines.append(
+                f"- {func_info}`{item['addr']}` type=`{item['type']}` "
+                f"left=`{item['left']}` right=`{item['right']}`"
+            )
+        if len(passed) > 10:
+            lines.append(f"... {len(passed) - 10} more passed compares")
+        lines.append("")
+
+    if not brief and compares:
+        lines.extend(["## All Compare Points", ""])
+        for item in compares[:30]:
+            result_info = f" result=`{item['result']}`" if item.get("result") else ""
+            targets = item.get("jump_targets", [])
+            target_info = f" targets={len(targets)}" if targets else ""
+            func_info = f"`{item['function']}:` " if item.get("function") else ""
+            lines.append(
+                f"- {func_info}`{item['addr']}` type=`{item['type']}` "
+                f"left=`{item['left']}` right=`{item['right']}`{result_info}{target_info}"
+            )
+        if len(compares) > 30:
+            lines.append(f"... {len(compares) - 30} more compare points")
+        lines.append("")
+
+    lines.extend(["## AI Guidance", ""])
+    lines.append("- **Failed Compares** are the most actionable: the input did not match the expected value at these points.")
+    lines.append("- For `cmp_imm` type, the `right` field is a constant — try making the input match this value.")
+    lines.append("- For `strcmp`/`memcmp` type, the comparison is between two memory regions; trace the arguments to find expected data.")
+    lines.append("- For `switch` type, the program uses a jump table; the `jump_targets` list shows all possible dispatch targets.")
+    lines.append("- Use `trace-values` for more detailed value trace including input sites and dispatcher states.")
+
+    return "\n".join(lines) + "\n"

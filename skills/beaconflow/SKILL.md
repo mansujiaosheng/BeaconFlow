@@ -155,6 +155,7 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `diff_flow` | Compare two runs at block/edge level. Outputs only-left/only-right blocks, edges, and hit-count deltas. |
 | `metadata_from_address_log` | Build fallback metadata by clustering one or more address logs. |
 | `trace_values` | Trace register/memory/compare values at key decision points. Extracts compare events, input sites, and dispatcher states. Optionally uses coverage data to infer branch results. |
+| `trace_compare` | Extract compare semantics at input check points. Identifies cmp reg/imm, cmp reg/reg, test, strcmp/strncmp/memcmp, strlen, and switch/jump table patterns. Outputs structured comparison information with inferred results. |
 
 ## Key Parameters
 
