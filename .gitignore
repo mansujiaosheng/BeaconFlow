@@ -7,3 +7,6 @@ tests/fixtures/runs/
 tests/fixtures/*runs/
 tests/fixtures/*.md
 tests/real/
+qemu_explore/
+test_target/
+*_ghidra/
