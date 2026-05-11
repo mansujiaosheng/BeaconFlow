@@ -11,13 +11,13 @@ from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infe
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
 from beaconflow.doctor import doctor_to_markdown, run_doctor
-from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
+from beaconflow.ghidra import decompile_ghidra, export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.models import hex_addr
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws_add_note, add_report as ws_add_report, add_run as ws_add_run, case_to_markdown, destroy_case, init_case, list_notes, list_reports, list_runs, load_manifest, summarize_case
-from beaconflow.wasm_parser import wasm_to_metadata
+from beaconflow.wasm_parser import analyze_wasm, wasm_to_metadata
 from beaconflow.runtime.trace_calls import trace_calls, trace_calls_to_markdown
 from beaconflow.runtime.trace_compare import trace_compare as trace_compare_rt, trace_compare_to_markdown as trace_compare_rt_to_markdown
 from beaconflow.analysis.auto_explore import auto_explore_loop, auto_explore_to_markdown
@@ -169,6 +169,42 @@ def _cmd_export_wasm(args: argparse.Namespace) -> int:
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
+
+
+def _cmd_wasm_analyze(args: argparse.Namespace) -> int:
+    try:
+        result = analyze_wasm(
+            wasm_path=args.target,
+            output_path=args.output,
+            fmt=args.format,
+            min_string=args.min_string,
+            max_functions=args.max_functions,
+        )
+        if args.output:
+            return 0
+        if isinstance(result, str):
+            print(result)
+        else:
+            print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+
+def _cmd_ghidra_decompile(args: argparse.Namespace) -> int:
+    result = decompile_ghidra(
+        target=args.target,
+        output=args.output,
+        function=args.function,
+        max_functions=args.max_functions,
+        timeout=args.timeout,
+        project_dir=args.project_dir,
+        project_name=args.project_name,
+    )
+    if not args.output:
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 1 if result.get("error") else 0
 
 
 def _cmd_trace_calls(args: argparse.Namespace) -> int:
@@ -1834,11 +1870,29 @@ def build_parser() -> argparse.ArgumentParser:
     export_ghidra.add_argument("--no-context", action="store_true", help="Skip block context extraction (instructions, calls, strings, etc.) for faster export.")
     export_ghidra.set_defaults(func=_cmd_export_ghidra)
 
+    ghidra_decompile = sub.add_parser("ghidra-decompile", help="Generate Ghidra decompiler pseudocode through pyghidra.")
+    ghidra_decompile.add_argument("--target", required=True, help="Binary file to decompile with Ghidra.")
+    ghidra_decompile.add_argument("--output", help="Output JSON path.")
+    ghidra_decompile.add_argument("--function", help="Function name or entry address to decompile. Default: first N functions.")
+    ghidra_decompile.add_argument("--max-functions", type=int, default=20, help="Maximum functions to decompile when --function is omitted.")
+    ghidra_decompile.add_argument("--timeout", type=int, default=30, help="Per-function decompiler timeout in seconds.")
+    ghidra_decompile.add_argument("--project-dir", help="Temporary Ghidra project directory.")
+    ghidra_decompile.add_argument("--project-name", default="beaconflow_decompile")
+    ghidra_decompile.set_defaults(func=_cmd_ghidra_decompile)
+
     # ---- WASM 导出命令 ----
     export_wasm = sub.add_parser("export-wasm-metadata", help="Export metadata from a WebAssembly (.wasm) binary using pure Python parser.")
     export_wasm.add_argument("--target", required=True, help="WASM binary file to analyze.")
     export_wasm.add_argument("--output", required=True, help="Output metadata JSON path.")
     export_wasm.set_defaults(func=_cmd_export_wasm)
+
+    wasm_analyze = sub.add_parser("wasm-analyze", help="Analyze a WebAssembly module: imports, exports, strings, data segments, and function summaries.")
+    wasm_analyze.add_argument("--target", required=True, help="WASM binary file to analyze.")
+    wasm_analyze.add_argument("--output", help="Output report path.")
+    wasm_analyze.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    wasm_analyze.add_argument("--min-string", type=int, default=4, help="Minimum ASCII string length to report.")
+    wasm_analyze.add_argument("--max-functions", type=int, default=0, help="Limit function summaries; 0 means all.")
+    wasm_analyze.set_defaults(func=_cmd_wasm_analyze)
 
     # ---- Runtime Trace 命令 ----
     trace_calls_cmd = sub.add_parser("trace-calls", help="Trace library function calls (strcmp/memcmp/etc.) at runtime using Frida.")

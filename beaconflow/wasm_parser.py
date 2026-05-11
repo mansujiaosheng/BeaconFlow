@@ -9,7 +9,9 @@ WASM 二进制格式参考: https://webassembly.github.io/spec/core/binary/
 
 from __future__ import annotations
 
+import hashlib
 import json
+import re
 import struct
 from pathlib import Path
 from typing import Any
@@ -331,10 +333,13 @@ class WasmModule:
         self.type_section: list[dict] = []
         self.import_count = 0
         self.import_names: list[str] = []
+        self.import_details: list[dict[str, Any]] = []
         self.function_type_indices: list[int] = []
         self.export_map: dict[str, tuple[int, str]] = {}
+        self.export_details: list[dict[str, Any]] = []
         self.functions: list[WasmFunction] = []
-        self.data_section_offsets: list[int] = []
+        self.data_segments: list[dict[str, Any]] = []
+        self.function_names: dict[int, str] = {}
         self._parse()
 
     def _parse(self):
@@ -354,7 +359,9 @@ class WasmModule:
             section_start = reader.pos
             section_data = reader.read_bytes(section_size)
 
-            if section_id == SECTION_TYPE:
+            if section_id == 0:
+                self._parse_custom_section(section_data)
+            elif section_id == SECTION_TYPE:
                 self._parse_type_section(section_data)
             elif section_id == SECTION_IMPORT:
                 self._parse_import_section(section_data)
@@ -396,9 +403,11 @@ class WasmModule:
             field_name = reader.read_name()
             kind = reader.read_byte()
             if kind == 0:
-                reader.read_leb128_unsigned()
+                type_index = reader.read_leb128_unsigned()
                 self.import_count += 1
-                self.import_names.append(f"{module_name}.{field_name}")
+                full_name = f"{module_name}.{field_name}"
+                self.import_names.append(full_name)
+                self.import_details.append({"module": module_name, "name": field_name, "kind": "func", "type_index": type_index})
             elif kind == 1:
                 reader.read_byte()
                 reader.read_leb128_unsigned()
@@ -427,6 +436,7 @@ class WasmModule:
             index = reader.read_leb128_unsigned()
             kind_name = {0: "func", 1: "table", 2: "memory", 3: "global"}.get(kind, "unknown")
             self.export_map[name] = (index, kind_name)
+            self.export_details.append({"name": name, "kind": kind_name, "index": index})
 
     def _parse_code_section(self, data: bytes):
         reader = WasmReader(data)
@@ -541,26 +551,37 @@ class WasmModule:
     def _parse_data_section(self, data: bytes):
         reader = WasmReader(data)
         count = reader.read_leb128_unsigned()
+        segment_index = 0
         for _ in range(count):
             flags = reader.read_leb128_unsigned()
+            mem_offset = None
             if flags == 0:
-                self._skip_init_expr(reader)
+                mem_offset = self._read_init_i32_expr(reader)
             elif flags == 1:
                 reader.read_leb128_unsigned()
-                self._skip_init_expr(reader)
+                mem_offset = self._read_init_i32_expr(reader)
             elif flags == 2:
                 reader.read_leb128_unsigned()
-                self._skip_init_expr(reader)
+                mem_offset = self._read_init_i32_expr(reader)
             size = reader.read_leb128_unsigned()
-            reader.read_bytes(size)
+            payload = reader.read_bytes(size)
+            self.data_segments.append({
+                "index": segment_index,
+                "flags": flags,
+                "memory_offset": mem_offset,
+                "size": size,
+                "data": payload,
+            })
+            segment_index += 1
 
-    def _skip_init_expr(self, reader: WasmReader):
+    def _read_init_i32_expr(self, reader: WasmReader) -> int | None:
+        value: int | None = None
         while not reader.at_end():
             opcode = reader.read_byte()
             if opcode == 0x0B:
                 break
             elif opcode == 0x41:
-                reader.read_leb128_signed(32)
+                value = reader.read_leb128_signed(32)
             elif opcode == 0x42:
                 reader.read_leb128_signed(64)
             elif opcode == 0x43:
@@ -569,8 +590,37 @@ class WasmModule:
                 reader.read_bytes(8)
             elif opcode == 0x23:
                 reader.read_leb128_unsigned()
+        return value
+
+    def _parse_custom_section(self, data: bytes):
+        reader = WasmReader(data)
+        try:
+            name = reader.read_name()
+        except Exception:
+            return
+        if name != "name":
+            return
+        while not reader.at_end():
+            try:
+                subsection_id = reader.read_byte()
+                subsection_size = reader.read_leb128_unsigned()
+                subsection_data = reader.read_bytes(subsection_size)
+            except Exception:
+                return
+            if subsection_id != 1:
+                continue
+            sub = WasmReader(subsection_data)
+            try:
+                count = sub.read_leb128_unsigned()
+                for _ in range(count):
+                    idx = sub.read_leb128_unsigned()
+                    self.function_names[idx] = sub.read_name()
+            except Exception:
+                return
 
     def _get_func_name(self, global_idx: int) -> str:
+        if global_idx in self.function_names:
+            return self.function_names[global_idx]
         for name, (idx, kind) in self.export_map.items():
             if kind == "func" and idx == global_idx:
                 return name
@@ -701,3 +751,152 @@ def wasm_to_metadata(wasm_path: str | Path, output_path: str | Path | None = Non
         "exports": len([k for k, v in module.export_map.items() if v[1] == "func"]),
         "imports": module.import_count,
     }
+
+
+def analyze_wasm(
+    wasm_path: str | Path,
+    output_path: str | Path | None = None,
+    fmt: str = "json",
+    min_string: int = 4,
+    max_functions: int = 0,
+) -> dict[str, Any] | str:
+    """Produce a WASM-focused static analysis report for RE triage."""
+    module = WasmModule(wasm_path)
+    raw = module.path.read_bytes()
+    strings = _extract_ascii_strings(raw, min_string)
+    data_segments = [_summarize_data_segment(seg, min_string=min_string) for seg in module.data_segments]
+    functions = [_summarize_function(func) for func in module.functions]
+    if max_functions and max_functions > 0:
+        functions = functions[:max_functions]
+
+    report: dict[str, Any] = {
+        "input_path": str(module.path),
+        "format": "wasm",
+        "size": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "imports": module.import_details,
+        "exports": module.export_details,
+        "data_segments": data_segments,
+        "strings": strings[:200],
+        "functions": functions,
+        "summary": {
+            "imports": len(module.import_details),
+            "exports": len(module.export_details),
+            "functions": len(module.functions),
+            "data_segments": len(module.data_segments),
+            "strings": len(strings),
+        },
+    }
+
+    text_or_obj: dict[str, Any] | str
+    if fmt == "markdown":
+        text_or_obj = wasm_analysis_to_markdown(report)
+    else:
+        text_or_obj = report
+
+    if output_path:
+        output = Path(output_path)
+        if isinstance(text_or_obj, str):
+            output.write_text(text_or_obj, encoding="utf-8")
+        else:
+            output.write_text(json.dumps(text_or_obj, indent=2, ensure_ascii=False), encoding="utf-8")
+    return text_or_obj
+
+
+def _extract_ascii_strings(data: bytes, min_len: int) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    pattern = rb"[\x20-\x7e]{" + str(max(1, min_len)).encode("ascii") + rb",}"
+    for match in re.finditer(pattern, data):
+        results.append({"offset": f"0x{match.start():x}", "text": match.group(0).decode("ascii", errors="replace")})
+    return results
+
+
+def _summarize_data_segment(seg: dict[str, Any], min_string: int) -> dict[str, Any]:
+    payload = seg["data"]
+    return {
+        "index": seg["index"],
+        "flags": seg["flags"],
+        "memory_offset": None if seg["memory_offset"] is None else f"0x{seg['memory_offset']:x}",
+        "size": seg["size"],
+        "preview_hex": payload[:64].hex(),
+        "strings": _extract_ascii_strings(payload, min_string)[:20],
+    }
+
+
+def _summarize_function(func: WasmFunction) -> dict[str, Any]:
+    calls = [insn.operands[0] for insn in func.instructions if insn.is_call() and insn.operands]
+    constants: list[int] = []
+    mem_offsets: list[int] = []
+    ops: dict[str, int] = {}
+    for insn in func.instructions:
+        ops[insn.name] = ops.get(insn.name, 0) + 1
+        if insn.is_const() and isinstance(insn.immediate, int):
+            constants.append(insn.immediate)
+        if insn.opcode in MEMORY_OPS and isinstance(insn.immediate, dict):
+            mem_offsets.append(insn.immediate.get("offset", 0))
+    constants_unique = list(dict.fromkeys(constants))
+    mem_offsets_unique = list(dict.fromkeys(mem_offsets))
+    hot_ops = sorted(ops.items(), key=lambda item: (-item[1], item[0]))[:12]
+    return {
+        "index": func.index,
+        "name": func.name,
+        "type_index": func.type_index,
+        "start": f"0x{func.start_offset:x}",
+        "end": f"0x{func.end_offset:x}",
+        "locals": len(func.locals),
+        "instructions": len(func.instructions),
+        "branches": sum(1 for insn in func.instructions if insn.is_branch()),
+        "compares": sum(1 for insn in func.instructions if insn.is_compare()),
+        "calls": list(dict.fromkeys(calls)),
+        "constants": [f"0x{c & 0xffffffffffffffff:x}" if c < 0 or c > 9 else c for c in constants_unique[:30]],
+        "memory_offsets": [f"0x{x:x}" for x in mem_offsets_unique[:30]],
+        "top_ops": [{"op": op, "count": count} for op, count in hot_ops],
+    }
+
+
+def wasm_analysis_to_markdown(report: dict[str, Any]) -> str:
+    lines = ["# WASM Analysis", ""]
+    lines.extend([
+        f"- Input: `{report['input_path']}`",
+        f"- Size: {report['size']} bytes",
+        f"- SHA256: `{report['sha256']}`",
+        f"- Functions: {report['summary']['functions']}",
+        f"- Imports: {report['summary']['imports']}",
+        f"- Exports: {report['summary']['exports']}",
+        f"- Data segments: {report['summary']['data_segments']}",
+        "",
+    ])
+    if report["imports"]:
+        lines.extend(["## Imports", ""])
+        for item in report["imports"]:
+            lines.append(f"- `{item['module']}.{item['name']}` kind={item['kind']} type={item.get('type_index', '')}")
+        lines.append("")
+    if report["exports"]:
+        lines.extend(["## Exports", ""])
+        for item in report["exports"]:
+            lines.append(f"- `{item['name']}` kind={item['kind']} index={item['index']}")
+        lines.append("")
+    if report["strings"]:
+        lines.extend(["## Strings", ""])
+        for item in report["strings"][:80]:
+            lines.append(f"- `{item['offset']}` `{item['text']}`")
+        lines.append("")
+    if report["data_segments"]:
+        lines.extend(["## Data Segments", ""])
+        for seg in report["data_segments"]:
+            lines.append(f"- segment {seg['index']} offset={seg['memory_offset']} size={seg['size']} preview=`{seg['preview_hex']}`")
+            for s in seg["strings"][:5]:
+                lines.append(f"  - +{s['offset']} `{s['text']}`")
+        lines.append("")
+    lines.extend(["## Functions", ""])
+    for func in report["functions"]:
+        calls = ", ".join(func["calls"][:8]) if func["calls"] else "-"
+        mem = ", ".join(func["memory_offsets"][:8]) if func["memory_offsets"] else "-"
+        consts = ", ".join(str(x) for x in func["constants"][:8]) if func["constants"] else "-"
+        lines.append(
+            f"- `{func['name']}` idx={func['index']} range={func['start']}..{func['end']} "
+            f"insn={func['instructions']} branches={func['branches']} compares={func['compares']} calls={calls}"
+        )
+        lines.append(f"  - mem offsets: {mem}")
+        lines.append(f"  - constants: {consts}")
+    return "\n".join(lines) + "\n"

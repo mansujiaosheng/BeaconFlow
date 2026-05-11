@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import platform
 import shutil
@@ -159,3 +160,79 @@ def export_ghidra_metadata_pyghidra(
         "functions": len(metadata.functions),
         "basic_blocks": sum(len(f.blocks) for f in metadata.functions),
     }
+
+
+def decompile_ghidra(
+    target: str | Path,
+    output: str | Path | None = None,
+    function: str | None = None,
+    max_functions: int = 20,
+    timeout: int = 30,
+    project_dir: str | Path | None = None,
+    project_name: str = "beaconflow_decompile",
+) -> dict[str, object]:
+    """Run Ghidra's decompiler through pyghidra and return pseudo-code.
+
+    This requires Ghidra to have a loader/language for the target. Stock Ghidra
+    installations usually do not load WebAssembly modules; in that case the
+    returned error is intentional and the caller should use the pure Python WASM
+    analyzer as fallback.
+    """
+    if importlib.util.find_spec("pyghidra") is None:
+        raise ImportError("pyghidra is required. Install it with `pip install pyghidra`.")
+
+    import pyghidra
+
+    target_path = Path(target).resolve()
+    result: dict[str, object] = {
+        "input_path": str(target_path),
+        "backend": "pyghidra",
+        "functions": [],
+    }
+
+    try:
+        with pyghidra.open_program(
+            target_path,
+            project_location=str(Path(project_dir).resolve()) if project_dir else tempfile.mkdtemp(prefix="beaconflow_ghidra_decompile_"),
+            project_name=project_name,
+            analyze=True,
+        ) as api:
+            from ghidra.app.decompiler import DecompInterface
+            from ghidra.util.task import ConsoleTaskMonitor
+
+            program = api.currentProgram
+            result["program_name"] = program.getName()
+            result["language"] = str(program.getLanguageID())
+            monitor = ConsoleTaskMonitor()
+            decompiler = DecompInterface()
+            decompiler.openProgram(program)
+
+            funcs = []
+            for func in program.getFunctionManager().getFunctions(True):
+                name = str(func.getName())
+                entry = str(func.getEntryPoint())
+                if function and function not in {name, entry}:
+                    continue
+                decompiled = decompiler.decompileFunction(func, timeout, monitor)
+                if decompiled and decompiled.decompileCompleted():
+                    pseudo = str(decompiled.getDecompiledFunction().getC())
+                    error = None
+                else:
+                    pseudo = ""
+                    error = str(decompiled.getErrorMessage()) if decompiled else "decompiler returned no result"
+                funcs.append({
+                    "name": name,
+                    "entry": entry,
+                    "signature": str(func.getSignature()),
+                    "pseudocode": pseudo,
+                    "error": error,
+                })
+                if not function and max_functions > 0 and len(funcs) >= max_functions:
+                    break
+            result["functions"] = funcs
+    except Exception as exc:
+        result["error"] = f"{type(exc).__name__}: {exc}"
+
+    if output:
+        Path(output).write_text(json.dumps(result, indent=2, ensure_ascii=False), encoding="utf-8")
+    return result
