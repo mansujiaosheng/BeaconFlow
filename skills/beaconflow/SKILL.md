@@ -171,6 +171,7 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `list_case_runs` | List all runs in the case workspace. |
 | `list_case_reports` | List all reports in the case workspace. |
 | `list_case_notes` | List all notes in the case workspace. |
+| `export_wasm_metadata` | Export metadata from a WebAssembly (.wasm) binary using pure Python parser. No external dependencies required. |
 
 ## Key Parameters
 

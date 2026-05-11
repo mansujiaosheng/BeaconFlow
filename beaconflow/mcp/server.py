@@ -16,6 +16,7 @@ from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws_add_note, add_report as ws_add_report, add_run as ws_add_run, case_to_markdown, destroy_case, init_case, list_notes, list_reports, list_runs, load_manifest, summarize_case
+from beaconflow.wasm_parser import wasm_to_metadata
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -582,6 +583,17 @@ TOOLS: dict[str, dict[str, Any]] = {
             "properties": {
                 "root": {"type": "string", "description": "Workspace root directory."},
             },
+        },
+    },
+    "export_wasm_metadata": {
+        "description": "Export metadata from a WebAssembly (.wasm) binary using pure Python parser. Extracts functions, basic blocks, instructions, exports, and imports. No external dependencies required.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wasm_path": {"type": "string", "description": "Path to WASM binary file."},
+                "output_path": {"type": "string", "description": "Output metadata JSON path."},
+            },
+            "required": ["wasm_path", "output_path"],
         },
     },
 }
@@ -1327,6 +1339,13 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
 
     if name == "list_case_notes":
         return _tool_result(list_notes(root=arguments.get("root")))
+
+    if name == "export_wasm_metadata":
+        result = wasm_to_metadata(
+            wasm_path=arguments["wasm_path"],
+            output_path=arguments["output_path"],
+        )
+        return _tool_result(result)
 
     raise ValueError(f"unknown tool: {name}")
 

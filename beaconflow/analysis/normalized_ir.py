@@ -180,6 +180,77 @@ _LOONGARCH_COND_MAP = {
     "ltu": "below", "gtu": "above",
 }
 
+_WASM_PATTERNS = [
+    (re.compile(r"\blocal\.get\s+(\S+)"), "LOAD"),
+    (re.compile(r"\blocal\.set\s+(\S+)"), "STORE"),
+    (re.compile(r"\blocal\.tee\s+(\S+)"), "STORE"),
+    (re.compile(r"\bglobal\.get\s+(\S+)"), "LOAD"),
+    (re.compile(r"\bglobal\.set\s+(\S+)"), "STORE"),
+    (re.compile(r"\bi32\.const\s+(\S+)"), "ASSIGN"),
+    (re.compile(r"\bi64\.const\s+(\S+)"), "ASSIGN"),
+    (re.compile(r"\bi32\.load\S*\s+(\S+)"), "LOAD"),
+    (re.compile(r"\bi64\.load\S*\s+(\S+)"), "LOAD"),
+    (re.compile(r"\bf32\.load\s+(\S+)"), "LOAD"),
+    (re.compile(r"\bf64\.load\s+(\S+)"), "LOAD"),
+    (re.compile(r"\bi32\.store\S*\s+(\S+)"), "STORE"),
+    (re.compile(r"\bi64\.store\S*\s+(\S+)"), "STORE"),
+    (re.compile(r"\bf32\.store\s+(\S+)"), "STORE"),
+    (re.compile(r"\bf64\.store\s+(\S+)"), "STORE"),
+    (re.compile(r"\bi32\.add\b"), "BINARY_ADD"),
+    (re.compile(r"\bi64\.add\b"), "BINARY_ADD"),
+    (re.compile(r"\bi32\.sub\b"), "BINARY_SUB"),
+    (re.compile(r"\bi64\.sub\b"), "BINARY_SUB"),
+    (re.compile(r"\bi32\.mul\b"), "BINARY_MUL"),
+    (re.compile(r"\bi64\.mul\b"), "BINARY_MUL"),
+    (re.compile(r"\bi32\.and\b"), "BINARY_AND"),
+    (re.compile(r"\bi64\.and\b"), "BINARY_AND"),
+    (re.compile(r"\bi32\.or\b"), "BINARY_OR"),
+    (re.compile(r"\bi64\.or\b"), "BINARY_OR"),
+    (re.compile(r"\bi32\.xor\b"), "BINARY_XOR"),
+    (re.compile(r"\bi64\.xor\b"), "BINARY_XOR"),
+    (re.compile(r"\bi32\.shl\b"), "BINARY_SHL"),
+    (re.compile(r"\bi64\.shl\b"), "BINARY_SHL"),
+    (re.compile(r"\bi32\.shr_[su]\b"), "BINARY_SHR"),
+    (re.compile(r"\bi64\.shr_[su]\b"), "BINARY_SHR"),
+    (re.compile(r"\bi32\.rotl\b"), "BINARY_ROL"),
+    (re.compile(r"\bi64\.rotl\b"), "BINARY_ROL"),
+    (re.compile(r"\bi32\.rotr\b"), "BINARY_ROR"),
+    (re.compile(r"\bi64\.rotr\b"), "BINARY_ROR"),
+    (re.compile(r"\bi32\.eqz\b"), "COMPARE"),
+    (re.compile(r"\bi64\.eqz\b"), "COMPARE"),
+    (re.compile(r"\bi32\.eq\b"), "COMPARE"),
+    (re.compile(r"\bi64\.eq\b"), "COMPARE"),
+    (re.compile(r"\bi32\.ne\b"), "COMPARE"),
+    (re.compile(r"\bi64\.ne\b"), "COMPARE"),
+    (re.compile(r"\bi32\.lt_[su]\b"), "COMPARE"),
+    (re.compile(r"\bi64\.lt_[su]\b"), "COMPARE"),
+    (re.compile(r"\bi32\.gt_[su]\b"), "COMPARE"),
+    (re.compile(r"\bi64\.gt_[su]\b"), "COMPARE"),
+    (re.compile(r"\bi32\.le_[su]\b"), "COMPARE"),
+    (re.compile(r"\bi64\.le_[su]\b"), "COMPARE"),
+    (re.compile(r"\bi32\.ge_[su]\b"), "COMPARE"),
+    (re.compile(r"\bi64\.ge_[su]\b"), "COMPARE"),
+    (re.compile(r"\bcall\s+(\S+)"), "CALL"),
+    (re.compile(r"\bcall_indirect\s+(\S+)"), "CALL"),
+    (re.compile(r"\breturn\b"), "RETURN"),
+    (re.compile(r"\bbr_if\s+(\S+)"), "BRANCH"),
+    (re.compile(r"\bbr\s+(\S+)"), "JUMP"),
+    (re.compile(r"\bbr_table\s+(\S+)"), "BRANCH"),
+    (re.compile(r"\bnop\b"), "NOP"),
+    (re.compile(r"\bdrop\b"), "POP"),
+    (re.compile(r"\bselect\b"), "SELECT"),
+    (re.compile(r"\bunreachable\b"), "UNREACHABLE"),
+    (re.compile(r"\bmemory\.size\b"), "LOAD"),
+    (re.compile(r"\bmemory\.grow\b"), "STORE"),
+]
+
+_WASM_BRANCH = re.compile(r"\bbr_if\s+(\S+)")
+_WASM_COND_MAP = {
+    "0": "loop_back",
+    "1": "block_exit",
+    "2": "outer_exit",
+}
+
 
 def _clean_operand(op: str) -> str:
     return op.strip().rstrip(",")
@@ -226,8 +297,15 @@ def _translate_insn(insn: str, block_addr: int) -> IRInstruction | None:
         cond = _LOONGARCH_COND_MAP.get(cond_suffix, cond_suffix)
         return IRInstruction("BRANCH", [cond, target], insn_stripped, block_addr)
 
+    # WASM 条件分支
+    m = _WASM_BRANCH.search(insn_stripped)
+    if m:
+        label = _clean_operand(m.group(1))
+        cond = _WASM_COND_MAP.get(label, f"wasm_br_{label}")
+        return IRInstruction("BRANCH", [cond, label], insn_stripped, block_addr)
+
     # 通用指令匹配（按优先级尝试所有架构模式）
-    all_patterns = _X86_PATTERNS + _ARM_PATTERNS + _MIPS_PATTERNS + _LOONGARCH_PATTERNS
+    all_patterns = _X86_PATTERNS + _ARM_PATTERNS + _MIPS_PATTERNS + _LOONGARCH_PATTERNS + _WASM_PATTERNS
     for pat, ir_op in all_patterns:
         m = pat.search(insn_stripped)
         if m:

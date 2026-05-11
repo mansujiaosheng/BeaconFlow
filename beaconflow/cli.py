@@ -17,6 +17,7 @@ from beaconflow.metadata import build_trace_metadata
 from beaconflow.models import hex_addr
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws_add_note, add_report as ws_add_report, add_run as ws_add_run, case_to_markdown, destroy_case, init_case, list_notes, list_reports, list_runs, load_manifest, summarize_case
+from beaconflow.wasm_parser import wasm_to_metadata
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -151,6 +152,19 @@ def _cmd_sig_match(args: argparse.Namespace) -> int:
     else:
         print(text)
     return 0
+
+
+def _cmd_export_wasm(args: argparse.Namespace) -> int:
+    try:
+        result = wasm_to_metadata(
+            wasm_path=args.target,
+            output_path=args.output,
+        )
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
 
 
 def _cmd_init_case(args: argparse.Namespace) -> int:
@@ -1705,6 +1719,12 @@ def build_parser() -> argparse.ArgumentParser:
     export_ghidra.add_argument("--timeout", type=int, default=600, help="Ghidra headless timeout in seconds.")
     export_ghidra.add_argument("--no-context", action="store_true", help="Skip block context extraction (instructions, calls, strings, etc.) for faster export.")
     export_ghidra.set_defaults(func=_cmd_export_ghidra)
+
+    # ---- WASM 导出命令 ----
+    export_wasm = sub.add_parser("export-wasm-metadata", help="Export metadata from a WebAssembly (.wasm) binary using pure Python parser.")
+    export_wasm.add_argument("--target", required=True, help="WASM binary file to analyze.")
+    export_wasm.add_argument("--output", required=True, help="Output metadata JSON path.")
+    export_wasm.set_defaults(func=_cmd_export_wasm)
 
     # ---- Case Workspace 命令 ----
     init_case_cmd = sub.add_parser("init-case", help="Initialize a case workspace for a target binary.")
