@@ -154,6 +154,7 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `diff_coverage` | Compare two coverage runs at function level. |
 | `diff_flow` | Compare two runs at block/edge level. Outputs only-left/only-right blocks, edges, and hit-count deltas. |
 | `metadata_from_address_log` | Build fallback metadata by clustering one or more address logs. |
+| `trace_values` | Trace register/memory/compare values at key decision points. Extracts compare events, input sites, and dispatcher states. Optionally uses coverage data to infer branch results. |
 
 ## Key Parameters
 
@@ -195,3 +196,4 @@ When using QEMU `in_asm`, do not use hit counts as a decisive dispatcher signal.
 - When both IDA and Ghidra metadata are available, they may differ in function naming and basic-block boundaries, but the JSON schema is identical.
 - Dispatcher identification is still heuristic-based. Default `strict` mode reduces false positives by requiring hot + multi-predecessor + multi-successor shape. Adjust `dispatcher_mode`, `dispatcher_min_hits`, `dispatcher_min_pred`, and `dispatcher_min_succ` only after checking candidate warnings.
 - State variable recovery (knowing *why* the dispatcher chose a specific block) requires richer trace data than BeaconFlow currently provides.
+- Use `trace_values` to extract compare semantics at decision points. The `immediate_compares` output is the most actionable: when the right operand is a constant, you know the expected value. Combined with coverage data, `branch_result` tells you whether the comparison succeeded or failed.

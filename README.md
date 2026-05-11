@@ -924,6 +924,51 @@ roles:
 
 > **提示**：Role Detector 依赖 block context 中的指令和调用信息。使用 Ghidra/IDA 导出 metadata 时默认包含 context。
 
+### 检测比较值追踪（Value Trace）
+
+`trace-values` 命令从 metadata 的 block context 中提取关键比较点的寄存器/内存/比较值信息，让 AI 不只知道"哪个块被执行"，还知道关键比较点发生了什么。
+
+```powershell
+# 基本用法（仅从 metadata 提取比较语义）
+python -m beaconflow.cli trace-values --metadata metadata.json --format markdown
+
+# 结合覆盖率数据推断分支结果
+python -m beaconflow.cli trace-values --metadata metadata.json --coverage drcov.log --format markdown
+
+# 结合 QEMU 地址日志推断分支结果
+python -m beaconflow.cli trace-values --metadata metadata.json --address-log trace.log --format markdown
+
+# 聚焦某个函数
+python -m beaconflow.cli trace-values --metadata metadata.json --focus-function check_flag --format json
+
+# 简洁模式
+python -m beaconflow.cli trace-values --metadata metadata.json --format markdown-brief
+```
+
+输出示例：
+
+```markdown
+# BeaconFlow Value Trace
+
+- Total compare events: 5
+- Immediate compares: 3
+- Input sites: 1
+- Dispatcher states: 0
+
+## Input Sites
+
+- `check_flag:0x401020` call=`scanf` type=`stdio`
+
+## Immediate Compares (Key Check Points)
+
+*These compare instructions use an immediate value as the right operand, making them the most actionable check points for AI analysis.*
+
+- `check_flag:0x401000` `CMP EAX, 0x41` type=`cmp` branch=`fail`
+  - left=`EAX` right=`0x41`
+```
+
+> **提示**：`Immediate Compares` 是最有价值的输出——右操作数是常量，AI 可以直接判断"输入应该接近这个值"。结合覆盖率数据时，`branch_result` 会显示 `taken`/`fallthrough`/`fail`，帮助 AI 理解比较是否成功。
+
 ---
 
 ## 完整案例：ACTF flagchecker（LoongArch）

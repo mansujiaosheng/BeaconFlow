@@ -774,9 +774,86 @@ def roles_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
                     lines.append(f"- {ev}")
             if c.get("recommended_actions"):
                 lines.append("")
-                lines.append("**Recommended actions:**")
-                for act in c["recommended_actions"][:3]:
-                    lines.append(f"- {act}")
+            lines.append("**Recommended actions:**")
+            for act in c["recommended_actions"][:3]:
+                lines.append(f"- {act}")
             lines.append("")
+
+    return "\n".join(lines) + "\n"
+
+
+def value_trace_to_markdown(result: dict[str, Any], brief: bool = False) -> str:
+    summary = result.get("summary", {})
+    compare_events = result.get("compare_events", [])
+    immediate_compares = result.get("immediate_compares", [])
+    input_sites = result.get("input_sites", [])
+    dispatcher_states = result.get("dispatcher_states", [])
+    lines = [
+        "# BeaconFlow Value Trace",
+        "",
+        f"- Total compare events: {summary.get('total_compare_events', 0)}",
+        f"- Immediate compares: {summary.get('immediate_compares', 0)}",
+        f"- Input sites: {summary.get('input_sites', 0)}",
+        f"- Dispatcher states: {summary.get('dispatcher_states', 0)}",
+        f"- Focus function: {summary.get('focus_function') or '<none>'}",
+        "",
+    ]
+
+    if input_sites:
+        lines.extend(["## Input Sites", ""])
+        for site in input_sites[:20]:
+            lines.append(f"- `{site['function']}:{site['address']}` call=`{site['call_name']}` type=`{site['input_type']}`")
+        if len(input_sites) > 20:
+            lines.append(f"... {len(input_sites) - 20} more input sites")
+        lines.append("")
+
+    if immediate_compares:
+        lines.extend(["## Immediate Compares (Key Check Points)", ""])
+        lines.append("*These compare instructions use an immediate value as the right operand, making them the most actionable check points for AI analysis.*")
+        lines.append("")
+        for event in immediate_compares[:30 if not brief else 10]:
+            branch_info = ""
+            if event.get("branch_result"):
+                branch_info = f" branch=`{event['branch_result']}`"
+            offset_info = ""
+            if event.get("input_offset") is not None:
+                offset_info = f" input_offset={event['input_offset']}"
+            lines.append(
+                f"- `{event['function']}:{event['address']}` "
+                f"`{event['instruction']}` "
+                f"type=`{event['compare_type']}`{branch_info}{offset_info}"
+            )
+            lines.append(f"  - left=`{event['left_operand']}` right=`{event['right_operand']}`")
+        if len(immediate_compares) > (30 if not brief else 10):
+            lines.append(f"... {len(immediate_compares) - (30 if not brief else 10)} more immediate compares")
+        lines.append("")
+
+    if dispatcher_states:
+        lines.extend(["## Dispatcher States", ""])
+        for ds in dispatcher_states[:10 if not brief else 5]:
+            hint = f" hint=`{ds['state_variable_hint']}`" if ds.get("state_variable_hint") else ""
+            lines.append(f"- `{ds['function']}:{ds['address']}` targets={len(ds.get('observed_targets', []))}{hint}")
+        lines.append("")
+
+    if not brief and compare_events:
+        lines.extend(["## All Compare Events", ""])
+        for event in compare_events[:50]:
+            branch_info = ""
+            if event.get("branch_result"):
+                branch_info = f" branch=`{event['branch_result']}`"
+            lines.append(
+                f"- `{event['function']}:{event['address']}` "
+                f"`{event['instruction']}` "
+                f"type=`{event['compare_type']}`{branch_info}"
+            )
+        if len(compare_events) > 50:
+            lines.append(f"... {len(compare_events) - 50} more compare events")
+        lines.append("")
+
+    lines.extend(["## AI Guidance", ""])
+    lines.append("- **Immediate Compares** are the most actionable: the right operand is a constant, so you know the expected value.")
+    lines.append("- If `branch_result=fail`, the comparison did not match; try modifying the input to make the left operand equal to the right operand.")
+    lines.append("- **Input Sites** show where the program reads external input; trace data flow from these sites to compare points.")
+    lines.append("- **Dispatcher States** show switch-like dispatch blocks; the state variable hint suggests what controls the dispatch.")
 
     return "\n".join(lines) + "\n"
