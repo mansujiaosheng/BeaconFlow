@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import time
 from pathlib import Path
 from typing import Any
@@ -23,22 +24,31 @@ except ImportError:
 
 
 def _parse_metadata_decision_points(metadata: dict[str, Any]) -> list[dict[str, Any]]:
-    """从 metadata 中提取决策点（cmp/test 指令地址）。"""
+    """从 metadata 中提取决策点（cmp/test 指令地址）。
+
+    尝试从 context.instructions 中计算每条 cmp/test 指令的精确地址。
+    由于 metadata 中没有每条指令的精确地址，这里使用块起始地址作为近似。
+    """
     points = []
+    seen_addrs = set()
     for func in metadata.get("functions", []):
         func_name = func.get("name", "")
         for block in func.get("blocks", []):
             ctx = block.get("context", {})
             instructions = ctx.get("instructions", [])
+            block_start = block.get("start", "0x0")
             for i, insn in enumerate(instructions):
                 insn_lower = insn.lower().strip()
                 if insn_lower.startswith("cmp ") or insn_lower.startswith("test "):
-                    block_start = block.get("start", "0x0")
-                    points.append({
-                        "address": block_start,
-                        "function": func_name,
-                        "instruction": insn.strip(),
-                    })
+                    # 使用块起始地址作为 hook 点（精确指令地址不可用）
+                    addr = block_start
+                    if addr not in seen_addrs:
+                        seen_addrs.add(addr)
+                        points.append({
+                            "address": addr,
+                            "function": func_name,
+                            "instruction": insn.strip(),
+                        })
     return points
 
 
@@ -56,7 +66,8 @@ def _build_frida_script(
 
 var addresses = """ + addr_list + r""";
 var maxEvents = """ + str(max_events) + r""";
-var imageBase = ptr(""" + json.dumps(image_base) + r""");
+// 使用运行时主模块基址（ASLR 兼容）
+var imageBase = Process.enumerateModules()[0].base;
 var events = [];
 var eventCount = 0;
 
@@ -234,29 +245,36 @@ def trace_compare(
                 return {"status": "error", "message": f"无法读取 metadata: {e}"}
 
         if metadata:
-            # 从 metadata 提取 image base
-            image_base = metadata.get("image_base", "0x0")
-            if isinstance(image_base, int):
-                image_base = hex(image_base)
+            image_base_val = metadata.get("image_base", "0x0")
+            if isinstance(image_base_val, int):
+                image_base_val = hex(image_base_val)
+            image_base = image_base_val
 
             points = _parse_metadata_decision_points(metadata)
+            image_base_int = int(image_base, 16) if image_base else 0
             for p in points:
                 if focus_function and p["function"] != focus_function:
                     continue
                 addr = p["address"]
+                addr_int = int(addr, 16)
                 if address_min:
                     try:
-                        if int(addr, 16) < int(address_min, 16):
+                        if addr_int < int(address_min, 16):
                             continue
                     except ValueError:
                         pass
                 if address_max:
                     try:
-                        if int(addr, 16) > int(address_max, 16):
+                        if addr_int > int(address_max, 16):
                             continue
                     except ValueError:
                         pass
-                hook_addresses.append(addr)
+                # metadata 中的地址可能是绝对地址，需要转为 RVA
+                if image_base_int and addr_int >= image_base_int:
+                    rva = addr_int - image_base_int
+                    hook_addresses.append(hex(rva))
+                else:
+                    hook_addresses.append(addr)
 
     if not hook_addresses:
         return {
@@ -273,6 +291,7 @@ def trace_compare(
 
     collected_data: dict[str, Any] = {}
     result_events: list[dict[str, Any]] = []
+    proc = None
     pid = None
 
     try:
@@ -280,7 +299,19 @@ def trace_compare(
         if args:
             spawn_args.extend(args)
 
-        pid = frida.spawn(spawn_args)
+        import subprocess as sp
+        proc = sp.Popen(
+            spawn_args,
+            stdin=sp.PIPE,
+            stdout=sp.PIPE,
+            stderr=sp.PIPE,
+            cwd=run_cwd,
+        )
+        pid = proc.pid
+
+        import time as _time
+        _time.sleep(0.3)
+
         session = frida.attach(pid)
 
         def on_message(message, data):
@@ -300,18 +331,27 @@ def trace_compare(
         script.on("message", on_message)
         script.load()
 
-        if stdin_data and auto_newline and not stdin_data.endswith("\n"):
-            stdin_data += "\n"
+        _time.sleep(0.2)
 
-        frida.resume(pid)
-
-        start_time = time.time()
-        while time.time() - start_time < timeout:
-            time.sleep(0.1)
+        if stdin_data:
+            if auto_newline and not stdin_data.endswith("\n"):
+                stdin_data += "\n"
             try:
-                os.kill(pid, 0)
-            except (ProcessLookupError, PermissionError):
-                break
+                proc.stdin.write(stdin_data.encode())
+                proc.stdin.flush()
+            except (BrokenPipeError, OSError):
+                pass
+        else:
+            try:
+                proc.stdin.close()
+            except (BrokenPipeError, OSError):
+                pass
+
+        try:
+            proc.wait(timeout=timeout)
+        except sp.TimeoutExpired:
+            proc.kill()
+            proc.wait()
 
     except frida.ProcessNotFoundError:
         return {"status": "error", "message": f"无法附加到进程: {target_path}"}
@@ -320,9 +360,9 @@ def trace_compare(
     except Exception as e:
         return {"status": "error", "message": f"Frida 错误: {e}"}
     finally:
-        if pid is not None:
+        if proc is not None:
             try:
-                os.kill(pid, 9)
+                proc.kill()
             except (ProcessLookupError, PermissionError):
                 pass
 
