@@ -146,7 +146,17 @@ def export_ghidra_metadata_pyghidra(
     if importlib.util.find_spec("pyghidra") is None:
         raise ImportError("pyghidra is required for the default Ghidra exporter. Install it with `pip install pyghidra`, or use --backend headless.")
 
-    from ghidra_scripts.export_ghidra_metadata import export_metadata
+    # 动态定位 ghidra_scripts 目录：优先从 beaconflow 包的父目录查找
+    _repo_root = Path(__file__).resolve().parent.parent.parent
+    _script_path = _repo_root / "ghidra_scripts" / "export_ghidra_metadata.py"
+    if not _script_path.exists():
+        raise FileNotFoundError(f"ghidra_scripts/export_ghidra_metadata.py not found at {_script_path}")
+
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("ghidra_scripts.export_ghidra_metadata", _script_path)
+    _mod = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    export_metadata = _mod.export_metadata
 
     target_path = Path(target).resolve()
     output_path = Path(output).resolve()

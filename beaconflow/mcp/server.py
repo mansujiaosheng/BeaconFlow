@@ -396,8 +396,8 @@ TOOLS: dict[str, dict[str, Any]] = {
             "required": ["metadata_path"],
         },
     },
-    "trace_compare": {
-        "description": "Extract compare semantics at input check points. Identifies cmp reg/imm, cmp reg/reg, test, strcmp/strncmp/memcmp, strlen, and switch/jump table patterns. Outputs structured comparison information with inferred results.",
+    "analyze_compare": {
+        "description": "Extract compare semantics at input check points from metadata (static analysis). Identifies cmp reg/imm, cmp reg/reg, test, strcmp/strncmp/memcmp, strlen, and switch/jump table patterns. Outputs structured comparison information with inferred results. Requires metadata_path.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1251,7 +1251,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             return _tool_result(value_trace_to_markdown(result))
         return _tool_result(result)
 
-    if name == "trace_compare":
+    if name == "analyze_compare":
         metadata = load_metadata(arguments["metadata_path"])
         executed_addrs = None
         if arguments.get("coverage_path"):

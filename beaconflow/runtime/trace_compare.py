@@ -52,6 +52,14 @@ def _parse_metadata_decision_points(metadata: dict[str, Any]) -> list[dict[str, 
     return points
 
 
+def _get_target_module_hint() -> str:
+    """获取目标模块名提示，用于Frida定位正确的模块基址。
+    
+    返回空字符串让Frida自动选择最大的非系统模块。
+    """
+    return ""
+
+
 def _build_frida_script(
     addresses: list[str],
     focus_function: str | None = None,
@@ -60,14 +68,39 @@ def _build_frida_script(
 ) -> str:
     """构建 Frida 脚本来 hook 比较指令地址。"""
     addr_list = json.dumps(addresses)
+    module_hint = _get_target_module_hint()
+
+    # 构建模块查找代码
+    if module_hint:
+        module_finder = f"Process.findModuleByName('{module_hint}')"
+    else:
+        # 自动选择：排除系统DLL，选择最大的用户模块
+        module_finder = """(function() {
+            var mods = Process.enumerateModules();
+            // 跳过ntdll, kernel32, kernelbase等系统模块
+            var sysPrefixes = ['ntdll', 'kernel32', 'kernelbase', 'msvcrt', 'ucrtbase',
+                               'user32', 'gdi32', 'advapi32', 'ole32', 'shell32',
+                               'combase', 'rpcrt4', 'msvcrt', 'vcruntime', 'api-ms-',
+                               'crypt32', 'ws2_32', 'secur32', 'dbghelp', 'frida'];
+            for (var i = 0; i < mods.length; i++) {
+                var name = mods[i].name.toLowerCase();
+                var isSys = false;
+                for (var j = 0; j < sysPrefixes.length; j++) {
+                    if (name.startsWith(sysPrefixes[j])) { isSys = true; break; }
+                }
+                if (!isSys && mods[i].size > 10000) return mods[i];
+            }
+            return mods[0];
+        })()"""
 
     return r"""
 "use strict";
 
 var addresses = """ + addr_list + r""";
 var maxEvents = """ + str(max_events) + r""";
-// 使用运行时主模块基址（ASLR 兼容）
-var imageBase = Process.enumerateModules()[0].base;
+// 使用目标模块基址（ASLR 兼容）
+var mod = """ + module_finder + r""";
+var imageBase = mod ? mod.base : Process.enumerateModules()[0].base;
 var events = [];
 var eventCount = 0;
 
@@ -77,80 +110,29 @@ function addEvent(evt) {
     send(JSON.stringify({type: "event", data: evt}));
 }
 
-// 解析 x86/x64 操作数
-function parseOperand(text, ctx) {
-    var result = {text: text, kind: "unknown", value: null, hex: null, ascii: null};
-
-    // 立即数
-    var immMatch = text.match(/^(0x[0-9a-f]+|-?\d+)$/i);
-    if (immMatch) {
-        result.kind = "immediate";
-        var val = parseInt(text, text.startsWith("0x") ? 16 : 10);
-        result.value = val;
-        result.hex = "0x" + val.toString(16);
-        if (val >= 0x20 && val <= 0x7e) {
-            result.ascii = String.fromCharCode(val);
+// 读取寄存器值（支持64/32/16/8位）
+function readReg(ctx, name) {
+    try {
+        var val = ctx[name];
+        if (val) {
+            if (typeof val.toInt32 === 'function') {
+                return {hex: "0x" + val.toString(16), signed: val.toInt32(), unsigned: val.toUInt32()};
+            }
+            return {hex: "0x" + val.toString(16), signed: 0, unsigned: 0};
         }
-        return result;
-    }
+    } catch(e) {}
+    return null;
+}
 
-    // 寄存器
-    var regMap = {
-        "rax": "rax", "rbx": "rbx", "rcx": "rcx", "rdx": "rdx",
-        "rsi": "rsi", "rdi": "rdi", "rbp": "rbp", "rsp": "rsp",
-        "r8": "r8", "r9": "r9", "r10": "r10", "r11": "r11",
-        "r12": "r12", "r13": "r13", "r14": "r14", "r15": "r15",
-        "eax": "eax", "ebx": "ebx", "ecx": "ecx", "edx": "edx",
-        "esi": "esi", "edi": "edi", "ebp": "ebp", "esp": "esp",
-        "ax": "ax", "bx": "bx", "cx": "cx", "dx": "dx",
-        "al": "al", "bl": "bl", "cl": "cl", "dl": "dl",
-        "ah": "ah", "bh": "bh", "ch": "ch", "dh": "dh",
-        "r8d": "r8d", "r9d": "r9d", "r10d": "r10d", "r11d": "r11d",
-        "r12d": "r12d", "r13d": "r13d", "r14d": "r14d", "r15d": "r15d",
-    };
-
-    var regLower = text.toLowerCase().replace(/^\[|\]$/g, "");
-    if (regMap[regLower]) {
-        result.kind = "register";
-        try {
-            var val = this.context[regLower];
-            if (val) {
-                var numVal = val.toInt32 !== undefined ? val.toInt32() : 0;
-                result.value = numVal;
-                result.hex = "0x" + (numVal >>> 0).toString(16);
-                if (numVal >= 0x20 && numVal <= 0x7e) {
-                    result.ascii = String.fromCharCode(numVal);
-                }
-            }
-        } catch(e) {}
-        return result;
-    }
-
-    // 内存操作数 [reg+offset]
-    var memMatch = text.match(/^\[(.+)\]$/i);
-    if (memMatch) {
-        result.kind = "memory";
-        try {
-            var addrStr = memMatch[1].toLowerCase().replace(/\s/g, "");
-            // 简单处理 [reg+0xoffset]
-            var parts = addrStr.split("+");
-            var baseReg = parts[0];
-            var offset = parts.length > 1 ? parseInt(parts[1], 16) : 0;
-            var baseVal = this.context[baseReg];
-            if (baseVal) {
-                var addr = baseVal.add(offset);
-                var byteVal = addr.readU8();
-                result.value = byteVal;
-                result.hex = "0x" + byteVal.toString(16);
-                if (byteVal >= 0x20 && byteVal <= 0x7e) {
-                    result.ascii = String.fromCharCode(byteVal);
-                }
-            }
-        } catch(e) {}
-        return result;
-    }
-
-    return result;
+// 尝试读取指针指向的字符串
+function tryReadString(ptr_val, maxLen) {
+    maxLen = maxLen || 64;
+    try {
+        if (ptr_val && typeof ptr_val.readUtf8String === 'function') {
+            return ptr_val.readUtf8String(maxLen);
+        }
+    } catch(e) {}
+    return null;
 }
 
 // 在指定地址插桩（RVA + 运行时 image base）
@@ -166,26 +148,47 @@ for (var i = 0; i < addresses.length; i++) {
                         var evt = {
                             address: addrStr,
                             event_index: eventCount,
-                            registers: {}
+                            registers: {},
+                            compare_hints: []
                         };
 
                         // 保存关键寄存器
                         var regNames = ["rax", "rbx", "rcx", "rdx", "rsi", "rdi",
-                                       "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15"];
+                                       "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+                                       "rsp", "rbp"];
                         for (var j = 0; j < regNames.length; j++) {
-                            try {
-                                var rv = ctx[regNames[j]];
-                                if (rv) {
-                                    evt.registers[regNames[j]] = "0x" + rv.toString(16);
+                            var regVal = readReg(ctx, regNames[j]);
+                            if (regVal) {
+                                evt.registers[regNames[j]] = regVal.hex;
+                                // 如果值在可打印ASCII范围内，添加提示
+                                var v = regVal.unsigned & 0xFF;
+                                if (v >= 0x20 && v <= 0x7e) {
+                                    evt.compare_hints.push(regNames[j] + ".low=0x" + v.toString(16) + "('" + String.fromCharCode(v) + "')");
                                 }
-                            } catch(e2) {}
+                            }
+                        }
+
+                        // 尝试读取常见比较寄存器对指向的字符串
+                        var ptrRegs = ["rcx", "rdx", "r8", "r9", "rsi", "rdi"];
+                        for (var k = 0; k < ptrRegs.length; k++) {
+                            try {
+                                var p = ctx[ptrRegs[k]];
+                                if (p) {
+                                    var s = tryReadString(p, 64);
+                                    if (s && s.length > 0 && s.length < 64) {
+                                        evt.compare_hints.push(ptrRegs[k] + "->'" + s.substring(0, 48) + "'");
+                                    }
+                                }
+                            } catch(e3) {}
                         }
 
                         addEvent(evt);
                     } catch(e) {}
                 }
             });
-        } catch(e) {}
+        } catch(e) {
+            // hook地址无效，跳过
+        }
     })(addresses[i]);
 }
 """
