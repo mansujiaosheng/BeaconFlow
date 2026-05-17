@@ -8,6 +8,7 @@ from pathlib import Path
 
 from beaconflow.analysis import deflatten_flow, diff_flow, rank_input_branches
 from beaconflow.analysis.ai_digest import compact_report, infer_report_kind
+from beaconflow.address_range import detect_executable_address_range
 from beaconflow.cli import _mutated_inputs, _parse_mutate_positions, _seed_from_mutate_format
 from beaconflow.coverage import load_address_log, load_drcov
 from beaconflow.mcp.server import TOOLS
@@ -49,6 +50,36 @@ def _loop_metadata() -> ProgramMetadata:
 
 
 class ParserTests(unittest.TestCase):
+    def test_elf_executable_load_range_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "target.elf"
+            ident = b"\x7fELF" + bytes([2, 1, 1]) + b"\x00" * 9
+            header = struct.pack(
+                "<16sHHIQQQIHHHHHH",
+                ident,
+                2,
+                0x3e,
+                1,
+                0x401000,
+                0x40,
+                0,
+                0,
+                0x40,
+                0x38,
+                2,
+                0,
+                0,
+                0,
+            )
+            exec_load = struct.pack("<IIQQQQQQ", 1, 5, 0x1000, 0x401000, 0x401000, 0x200, 0x300, 0x1000)
+            data_load = struct.pack("<IIQQQQQQ", 1, 6, 0x2000, 0x404000, 0x404000, 0x100, 0x100, 0x1000)
+            path.write_bytes(header + exec_load + data_load)
+
+            result = detect_executable_address_range(path)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["address_min"], "0x401000")
+            self.assertEqual(result["address_max"], "0x401300")
+
     def test_qemu_address_log_parser_supports_common_formats(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "qemu.log"

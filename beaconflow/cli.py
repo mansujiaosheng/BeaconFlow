@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, match_signatures, normalize_to_ir, rank_input_branches, recover_state_transitions, sig_match_to_markdown
+from beaconflow.address_range import detect_executable_address_range
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -1015,6 +1016,38 @@ def _parse_optional_int(value: str | None) -> int | None:
     return int(value, 16) if value.lower().startswith("0x") else int(value)
 
 
+def _maybe_auto_address_range(args: argparse.Namespace, target_path: str | None = None) -> dict[str, object] | None:
+    if getattr(args, "address_min", None) or getattr(args, "address_max", None):
+        return None
+    if getattr(args, "no_auto_address_range", False):
+        return None
+    path = target_path or getattr(args, "target", None) or getattr(args, "input_path", None)
+    if not path:
+        return None
+    detected = detect_executable_address_range(path)
+    if not detected or detected.get("status") != "ok":
+        return detected
+    args.address_min = detected["address_min"]
+    args.address_max = detected["address_max"]
+    return detected
+
+
+def _auto_address_range_summary(detected: dict[str, object] | None) -> dict[str, object] | None:
+    if not detected:
+        return None
+    summary = {
+        "status": detected.get("status"),
+        "source": detected.get("source"),
+        "address_min": detected.get("address_min"),
+        "address_max": detected.get("address_max"),
+    }
+    if detected.get("reason"):
+        summary["reason"] = detected.get("reason")
+    if detected.get("format"):
+        summary["format"] = detected.get("format")
+    return summary
+
+
 def _resolve_address_range(args: argparse.Namespace, metadata):
     """将 --from/--to 参数（函数名或地址）解析为 address_start/address_end 整数。"""
     from beaconflow.analysis.flow import _resolve_function_address, _resolve_function_end
@@ -1034,6 +1067,13 @@ def _resolve_address_range(args: argparse.Namespace, metadata):
 
 
 def _cmd_metadata_from_address_log(args: argparse.Namespace) -> int:
+    detected_range = _maybe_auto_address_range(args, args.input_path or None)
+    if detected_range and detected_range.get("status") == "ok":
+        print(
+            f"[metadata-from-address-log] Auto address range: {args.address_min}-{args.address_max} "
+            f"({detected_range.get('source')})",
+            flush=True,
+        )
     coverage = _load_many_address_logs(args.address_log, args)
     metadata = build_trace_metadata(
         coverage,
@@ -1050,6 +1090,7 @@ def _cmd_metadata_from_address_log(args: argparse.Namespace) -> int:
                 "events": len(coverage.blocks),
                 "functions": len(metadata.functions),
                 "basic_blocks": sum(len(function.blocks) for function in metadata.functions),
+                "auto_address_range": _auto_address_range_summary(detected_range),
             },
             indent=2,
         )
@@ -1318,6 +1359,15 @@ def _cmd_qemu_explore(args: argparse.Namespace) -> int:
     inputs = _explore_inputs(args)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    detected_range = _maybe_auto_address_range(args, args.target)
+    if detected_range and detected_range.get("status") == "ok":
+        print(
+            f"[qemu-explore] Auto address range: {args.address_min}-{args.address_max} "
+            f"({detected_range.get('source')})",
+            flush=True,
+        )
+    elif detected_range and detected_range.get("status") == "unsupported":
+        print(f"[qemu-explore] Auto address range unavailable: {detected_range.get('reason')}", flush=True)
 
     total = len(inputs)
     max_workers = min(total, getattr(args, "jobs", 0) or total)
@@ -1416,6 +1466,9 @@ def _cmd_qemu_explore(args: argparse.Namespace) -> int:
             "runs": len(report_runs),
             "total_union_functions": len(metadata.functions),
             "total_union_blocks": sum(len(function.blocks) for function in metadata.functions),
+            "auto_address_range": _auto_address_range_summary(detected_range),
+            "address_min": args.address_min,
+            "address_max": args.address_max,
         },
         "runs": report_runs,
         "recommended_runs": sorted(
@@ -1619,6 +1672,15 @@ def _qemu_explore_to_markdown(report: dict[str, object], brief: bool = False) ->
         f"- Runs: {summary['runs']}",
         f"- Union functions: {summary['total_union_functions']}",
         f"- Union blocks: {summary['total_union_blocks']}",
+    ])
+    if summary.get("address_min") or summary.get("address_max"):
+        lines.append(f"- Address filter: `{summary.get('address_min')}`-`{summary.get('address_max')}`")
+    auto_range = summary.get("auto_address_range") or {}
+    if auto_range and auto_range.get("status") == "ok":
+        lines.append(f"- Auto address range: `{auto_range.get('address_min')}`-`{auto_range.get('address_max')}` ({auto_range.get('source')})")
+    elif auto_range and auto_range.get("status") == "unsupported":
+        lines.append(f"- Auto address range: unavailable ({auto_range.get('reason')})")
+    lines.extend([
         "",
         "## Runs",
         "",
@@ -1713,6 +1775,7 @@ def build_parser() -> argparse.ArgumentParser:
     quick_qemu.add_argument("--block-size", type=int, default=4)
     quick_qemu.add_argument("--address-min")
     quick_qemu.add_argument("--address-max")
+    quick_qemu.add_argument("--no-auto-address-range", action="store_true", help="Do not infer address range from ELF executable LOAD segments.")
     quick_qemu.add_argument("--gap", default="0x100")
     quick_qemu.add_argument("--name-prefix", default="qemu_trace")
     quick_qemu.add_argument("--focus-function")
@@ -2056,6 +2119,7 @@ def build_parser() -> argparse.ArgumentParser:
     trace_meta.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log events.")
     trace_meta.add_argument("--address-min", help="Keep only events at or above this address.")
     trace_meta.add_argument("--address-max", help="Keep only events below this address.")
+    trace_meta.add_argument("--no-auto-address-range", action="store_true", help="Do not infer address range from --input-path ELF executable LOAD segments.")
     trace_meta.add_argument("--gap", default="0x100", help="Start a new trace region when unique addresses gap exceeds this.")
     trace_meta.add_argument("--name-prefix", default="trace_region")
     trace_meta.set_defaults(func=_cmd_metadata_from_address_log)
@@ -2082,6 +2146,7 @@ def build_parser() -> argparse.ArgumentParser:
     qemu_explore.add_argument("--block-size", type=int, default=4)
     qemu_explore.add_argument("--address-min")
     qemu_explore.add_argument("--address-max")
+    qemu_explore.add_argument("--no-auto-address-range", action="store_true", help="Do not infer address range from ELF executable LOAD segments.")
     qemu_explore.add_argument("--gap", default="0x100")
     qemu_explore.add_argument("--name-prefix", default="qemu_trace")
     qemu_explore.add_argument("--focus-function")

@@ -153,11 +153,10 @@ python -m beaconflow.cli quickstart-qemu `
   --stdin "ACTF{00000000000000000000000000000000}" `
   --auto-newline `
   --failure-regex "Wrong" `
-  --address-min 0x220000 --address-max 0x244000 `
   --format markdown
 ```
 
-输出目录会包含 QEMU logs、fallback metadata、path novelty 报告和 `quickstart-qemu.md` 索引。
+默认会从 ELF executable `PT_LOAD` 段自动推断 `address_min/address_max`，输出目录会包含 QEMU logs、fallback metadata、path novelty 报告和 `quickstart-qemu.md` 索引。对静态链接大 ELF，如果报告里的 `Auto address range` 仍然太宽，可以再手工传 `--address-min/--address-max` 收窄到核心函数范围。
 
 ### 控制流平坦化
 
@@ -340,7 +339,7 @@ python -m beaconflow.cli qemu-explore `
 
 如果需要精确循环次数、dispatcher hit count 或 timing/path oracle，请使用 `--trace-mode exec,nochain`。默认 `in_asm` 更适合快速路径探索，hit count 只能当翻译日志证据。
 
-对静态链接或运行库噪声很大的 ELF，务必优先加 `--address-min` / `--address-max` 限定目标代码范围。实测 LoongArch 静态题目如果不限定范围，`qemu-explore` 会把运行库地址也拿去聚类和差分，后处理可能非常慢；限定到题目核心范围后，同一批输入可在十几秒内完成。
+对静态链接或运行库噪声很大的 ELF，`qemu-explore` 默认会从目标 ELF 的 executable `PT_LOAD` 段自动填充 `address_min/address_max`，避免无界聚类运行库地址。实测 LoongArch 静态题目可以在不手工传范围时完成；如果自动范围仍包含大量静态库代码，继续用 `--address-min` / `--address-max` 手工收窄到题目核心范围。
 
 ### 多输入路径探索（qemu-explore）
 
@@ -370,7 +369,8 @@ python -m beaconflow.cli qemu-explore `
 - `--stdin-file`：可重复，从文件读取测试输入
 - `--auto-newline`：自动给每个 stdin 追加换行符
 - `--failure-regex` / `--success-regex`：根据 stdout/stderr 匹配判定 success/failure
-- `--address-min` / `--address-max`：只分析此地址范围内的 trace 事件
+- `--address-min` / `--address-max`：只分析此地址范围内的 trace 事件；未传时会尝试从 ELF executable `PT_LOAD` 段自动推断
+- `--no-auto-address-range`：关闭 ELF 自动地址范围识别
 - `--gap`：地址聚类间隔，超过此间隔会拆分为不同函数区段
 - `--jobs`：并行 QEMU worker 数量，默认全部并行
 - `--timeout`：每个 QEMU 实例的超时秒数
