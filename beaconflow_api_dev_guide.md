@@ -471,3 +471,147 @@ CI 在 `.github/workflows/ci.yml` 中定义：
 - `predecessors` / `successors`
 - `nearby_comparisons`：从指令文本中提取的 compare/test/conditional branch/move/set 线索
 - `recommendation.priority` 与 `recommendation.reasons`：说明这个块为什么值得打开反汇编继续看
+
+## 13. 一键 Triage 工作流
+
+面向新人和 Agent 的快速入口，一条命令完成从 metadata 到分析报告的全流程。
+
+| CLI 命令 | 用途 |
+| --- | --- |
+| `triage-native` | PE/ELF 本地分析：Ghidra metadata → drcov → coverage → flow → decision_points → roles |
+| `triage-qemu` | QEMU 远程分析：Ghidra metadata → QEMU trace → flow |
+| `triage-wasm` | WASM 分析：wasm_analyze → metadata → sig_match |
+
+示例：
+
+```powershell
+beaconflow triage-native --target D:\CTF\target.exe --output-dir D:\case\output
+beaconflow triage-qemu --target D:\CTF\arm.elf --qemu-arch arm --output-dir D:\case\output
+beaconflow triage-wasm --target D:\CTF\app.wasm --output-dir D:\case\output
+```
+
+## 14. 模板库与建议引擎
+
+BeaconFlow 不自研 hook/符号执行/调试框架，只负责推荐模板 → 填充参数 → 导入输出 → 总结证据。
+
+### 可用模板
+
+| 模板名 | 类别 | 描述 |
+| --- | --- | --- |
+| `compare_strcmp_memcmp` | Frida/compare | Hook strcmp/memcmp/strncmp |
+| `input_read_recv_scanf` | Frida/input | Hook read/recv/scanf/fgets |
+| `memory_snapshot` | Frida/memory | 在指定地址 dump 内存 |
+| `jni_getstringutfchars` | Frida/android | Hook JNI GetStringUTFChars |
+| `android_string_equals` | Frida/android | Hook String.equals/compareTo |
+| `android_crypto_base64_cipher` | Frida/android | Hook Base64/Cipher/MessageDigest |
+| `find_avoid_stdin` | angr/solve | stdin 模式求解 |
+| `find_avoid_argv` | angr/solve | argv 模式求解 |
+| `break_decision` | GDB/breakpoint | 决策点断点脚本 |
+| `dump_registers` | GDB/register | 寄存器 dump |
+| `watch_buffer` | GDB/watchpoint | 内存写监视 |
+| `break_cmp` | x64dbg/breakpoint | 比较指令断点 |
+| `log_registers` | x64dbg/register | 寄存器日志 |
+| `trace_until_ret` | x64dbg/trace | 追踪到函数返回 |
+
+### 建议命令
+
+| CLI 命令 | 用途 |
+| --- | --- |
+| `suggest-hook` | 根据分析证据推荐 Frida hook 模板 |
+| `suggest-angr` | 根据 flow-diff/roles 推荐 angr find/avoid 地址 |
+| `suggest-debug` | 根据 decision point 推荐 GDB/x64dbg 断点脚本 |
+| `generate-template` | 生成指定模板文件，替换参数占位符 |
+| `list-templates` | 列出所有可用模板 |
+
+示例：
+
+```powershell
+beaconflow suggest-hook --roles roles.json --decision-points dp.json
+beaconflow suggest-angr --flow-diff diff.json --roles roles.json
+beaconflow suggest-debug --decision-points dp.json --debugger gdb --output bp.gdb
+beaconflow generate-template --template-name compare_strcmp_memcmp --output hook.js --params MAX_READ=64
+```
+
+## 15. 外部工具输出导入
+
+| CLI 命令 | 用途 |
+| --- | --- |
+| `import-frida-log` | 导入 Frida hook 输出日志，解析比较/输入事件 |
+| `import-gdb-log` | 导入 GDB 调试日志，解析断点/寄存器/内存 |
+| `import-angr-result` | 导入 angr 求解结果（JSON 或文本） |
+| `import-jadx-summary` | 导入 JADX 反编译摘要 |
+
+示例：
+
+```powershell
+beaconflow import-frida-log --log frida_output.log
+beaconflow import-gdb-log --log gdb_output.log
+beaconflow import-angr-result --result angr_solution.json
+```
+
+## 16. IDA/Ghidra 回写脚本
+
+| CLI 命令 | 用途 |
+| --- | --- |
+| `export-annotations` | 从分析报告生成 IDA Python / Ghidra Java 标注脚本 |
+
+支持标注：covered blocks、branch_rank、dispatcher candidates、decision_points、roles、trace_compare。
+
+```powershell
+beaconflow export-annotations --output-dir annotations/ --coverage cov.json --decision-points dp.json --roles roles.json --format both
+```
+
+## 17. Fuzz Corpus 管理
+
+| CLI 命令 | 用途 |
+| --- | --- |
+| `corpus-init` | 初始化 fuzz corpus 目录 |
+| `corpus-minimize` | 最小化 corpus（去重或基于覆盖率） |
+| `corpus-from-reports` | 从 BeaconFlow 报告提取种子 |
+| `generate-harness` | 生成 AFL++/libFuzzer harness 模板 |
+| `import-fuzz` | 导入 AFL++ 结果 |
+
+## 18. DynamoRIO 自定义 Instrumentation
+
+| CLI 命令 | 用途 |
+| --- | --- |
+| `dr-generate-client` | 生成 DynamoRIO 客户端模板（4种：compare/memory/call/register trace） |
+| `dr-run-client` | 运行自定义 DynamoRIO 客户端 |
+| `dr-import-trace` | 导入自定义 trace 日志 |
+
+## 19. 稳定 JSON Schema
+
+| CLI 命令 | 用途 |
+| --- | --- |
+| `schema --list` | 列出所有可用 schema 名 |
+| `schema --name X` | 打印指定 schema |
+| `schema --validate report.json --name X` | 验证报告是否符合 schema |
+
+支持 25 种报告类型的完整 Schema 验证，包括类型检查、枚举验证、数值范围、嵌套对象。
+
+## 20. CLI 与 MCP 对应关系（新增）
+
+| CLI | MCP |
+| --- | --- |
+| `triage-native` | CLI only |
+| `triage-qemu` | CLI only |
+| `triage-wasm` | CLI only |
+| `suggest-hook` | CLI only |
+| `suggest-angr` | CLI only |
+| `suggest-debug` | CLI only |
+| `generate-template` | CLI only |
+| `list-templates` | CLI only |
+| `import-frida-log` | CLI only |
+| `import-gdb-log` | CLI only |
+| `import-angr-result` | CLI only |
+| `import-jadx-summary` | CLI only |
+| `export-annotations` | CLI only |
+| `corpus-init` | CLI only |
+| `corpus-minimize` | CLI only |
+| `corpus-from-reports` | CLI only |
+| `generate-harness` | CLI only |
+| `import-fuzz` | CLI only |
+| `dr-generate-client` | CLI only |
+| `dr-run-client` | CLI only |
+| `dr-import-trace` | CLI only |
+| `schema --validate` | CLI only |
