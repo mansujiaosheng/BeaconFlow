@@ -1,4 +1,5 @@
 from beaconflow.analysis.coverage_mapper import analyze_coverage, diff_coverage
+from beaconflow.analysis.block_context import build_block_context_report
 from beaconflow.analysis.decompile_function import decompile_function, decompile_to_markdown
 from beaconflow.analysis.decision_points import analyze_decision_points, find_decision_points, inspect_decision_point
 from beaconflow.analysis.feedback_explore import feedback_auto_explore, generate_explore_plan
@@ -10,4 +11,4 @@ from beaconflow.analysis.sig_matcher import match_signatures, sig_match_to_markd
 from beaconflow.analysis.trace_compare import analyze_trace_compare, extract_compare_semantics
 from beaconflow.analysis.value_trace import analyze_value_trace, extract_compare_events, extract_dispatcher_states, extract_input_sites
 
-__all__ = ["analyze_coverage", "analyze_decision_points", "analyze_flow", "analyze_input_taint", "analyze_roles", "analyze_trace_compare", "analyze_value_trace", "decompile_function", "decompile_to_markdown", "deflatten_flow", "deflatten_merge", "diff_coverage", "diff_flow", "extract_compare_events", "extract_compare_semantics", "extract_dispatcher_states", "extract_input_sites", "feedback_auto_explore", "find_decision_points", "generate_explore_plan", "ir_to_markdown", "inspect_decision_point", "inspect_role", "detect_roles", "match_signatures", "normalize_to_ir", "rank_input_branches", "recover_state_transitions", "sig_match_to_markdown"]
+__all__ = ["analyze_coverage", "analyze_decision_points", "analyze_flow", "analyze_input_taint", "analyze_roles", "analyze_trace_compare", "analyze_value_trace", "build_block_context_report", "decompile_function", "decompile_to_markdown", "deflatten_flow", "deflatten_merge", "diff_coverage", "diff_flow", "extract_compare_events", "extract_compare_semantics", "extract_dispatcher_states", "extract_input_sites", "feedback_auto_explore", "find_decision_points", "generate_explore_plan", "ir_to_markdown", "inspect_decision_point", "inspect_role", "detect_roles", "match_signatures", "normalize_to_ir", "rank_input_branches", "recover_state_transitions", "sig_match_to_markdown"]

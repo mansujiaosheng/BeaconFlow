@@ -464,3 +464,10 @@ CI 在 `.github/workflows/ci.yml` 中定义：
 - Windows smoke：安装 MinGW，运行 `tests\smoke_beaconflow.py`，覆盖 PE 生成、DynamoRIO drcov、coverage/flow 分析。
 
 新增 MCP 工具或报告字段时，同步更新 `TOOLS` schema、CLI parser、README/API 文档，并在 `tests/test_core.py` 增加 schema 或 report shape 断言。
+
+`inspect_block` 返回的 block context 字段包括：
+
+- `context.instructions/calls/strings/constants/data_refs/code_refs`
+- `predecessors` / `successors`
+- `nearby_comparisons`：从指令文本中提取的 compare/test/conditional branch/move/set 线索
+- `recommendation.priority` 与 `recommendation.reasons`：说明这个块为什么值得打开反汇编继续看

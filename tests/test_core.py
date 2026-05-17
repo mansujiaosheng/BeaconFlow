@@ -8,13 +8,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from beaconflow.analysis import deflatten_flow, diff_flow, rank_input_branches
+from beaconflow.analysis import build_block_context_report, deflatten_flow, diff_flow, rank_input_branches
 from beaconflow.analysis.ai_digest import compact_report, infer_report_kind
 from beaconflow.address_range import detect_executable_address_range
 from beaconflow.cli import _mutated_inputs, _parse_mutate_positions, _seed_from_mutate_format
 from beaconflow.coverage import load_address_log, load_drcov
 from beaconflow.mcp.server import TOOLS
-from beaconflow.models import BasicBlock, CoverageBlock, CoverageData, Function, ProgramMetadata
+from beaconflow.models import BasicBlock, BlockContext, CoverageBlock, CoverageData, Function, ProgramMetadata
 
 
 def _metadata() -> ProgramMetadata:
@@ -162,6 +162,26 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(strict["summary"]["dispatcher_blocks"], 0)
         self.assertGreaterEqual(aggressive["summary"]["dispatcher_blocks"], 1)
         self.assertTrue(any(item["warnings"] for item in aggressive["dispatcher_candidates"]))
+
+    def test_block_context_report_explains_comparisons_and_reasons(self) -> None:
+        block = BasicBlock(
+            0x1000,
+            0x1010,
+            (0x1020, 0x1030),
+            context=BlockContext(
+                instructions=("cmp eax, 0x41", "jne 0x1030", "call strcmp"),
+                calls=("strcmp",),
+                strings=("Wrong",),
+                constants=(0x41,),
+            ),
+        )
+        pred = BasicBlock(0x0ff0, 0x1000, (0x1000,))
+        func = Function("check", 0x0ff0, 0x1040, (pred, block))
+        report = build_block_context_report(func, block)
+        self.assertEqual(report["predecessors"], ["0xff0"])
+        self.assertEqual(report["recommendation"]["priority"], "high")
+        self.assertGreaterEqual(len(report["nearby_comparisons"]), 2)
+        self.assertTrue(any("multiple successors" in reason for reason in report["recommendation"]["reasons"]))
 
     def test_deflatten_warns_when_qemu_in_asm_counts_are_used(self) -> None:
         metadata = _loop_metadata()

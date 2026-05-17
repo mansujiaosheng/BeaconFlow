@@ -170,6 +170,7 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `qemu_explore` | Run multiple QEMU traced inputs in parallel, classify verdicts, rank path novelty. |
 | `analyze_coverage` | Map drcov blocks to IDA/Ghidra-exported functions and basic blocks. |
 | `analyze_flow` | Map a drcov or address-log file to ordered basic-block flow and real transitions. |
+| `inspect_block` | Show instructions, predecessors/successors, calls, strings, constants, nearby comparisons, and reasons the block is or is not worth manual inspection. |
 | `deflatten_flow` | Remove dispatcher blocks from execution flow, reconstruct real control flow edges. Key tool for CFF deflattening. |
 | `deflatten_merge` | Merge multiple deflatten results to restore complete real CFG. Identifies common paths and input-dependent branches. |
 | `recover_state_transitions` | Recover state transition table from multiple traces. Identifies deterministic vs input-dependent state variable transitions for CFF deflattening. |

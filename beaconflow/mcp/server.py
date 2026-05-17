@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, match_signatures, normalize_to_ir, rank_input_branches, recover_state_transitions, sig_match_to_markdown
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, build_block_context_report, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, match_signatures, normalize_to_ir, rank_input_branches, recover_state_transitions, sig_match_to_markdown
 from beaconflow.address_range import detect_executable_address_range
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
@@ -1292,14 +1292,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         for func in metadata.functions:
             for block in func.blocks:
                 if block.start == addr:
-                    result = {
-                        "function": func.name,
-                        "function_start": _hex_addr(func.start),
-                        "block_start": _hex_addr(block.start),
-                        "block_end": _hex_addr(block.end),
-                        "successors": [_hex_addr(s) for s in block.succs],
-                        "context": block.context.to_json(),
-                    }
+                    result = build_block_context_report(func, block)
                     return _tool_result(result)
         raise ValueError(f"Block at {_hex_addr(addr)} not found in metadata")
 

@@ -6,7 +6,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, match_signatures, normalize_to_ir, rank_input_branches, recover_state_transitions, sig_match_to_markdown
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, build_block_context_report, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, match_signatures, normalize_to_ir, rank_input_branches, recover_state_transitions, sig_match_to_markdown
 from beaconflow.address_range import detect_executable_address_range
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
@@ -605,14 +605,7 @@ def _cmd_inspect_block(args: argparse.Namespace) -> int:
     for func in metadata.functions:
         for block in func.blocks:
             if block.start == addr:
-                result = {
-                    "function": func.name,
-                    "function_start": hex_addr(func.start),
-                    "block_start": hex_addr(block.start),
-                    "block_end": hex_addr(block.end),
-                    "successors": [hex_addr(s) for s in block.succs],
-                    "context": block.context.to_json(),
-                }
+                result = build_block_context_report(func, block)
                 if args.format == "markdown":
                     text = _inspect_block_to_markdown(result)
                 else:
@@ -874,9 +867,24 @@ def _inspect_block_to_markdown(result: dict[str, Any]) -> str:
         "",
         f"- Function: `{result['function']}` (starts at `{result['function_start']}`)",
         f"- Range: `{result['block_start']}` - `{result['block_end']}`",
+        f"- Predecessors: {', '.join(f'`{p}`' for p in result.get('predecessors', [])) or '<none>'}",
         f"- Successors: {', '.join(f'`{s}`' for s in result['successors']) or '<none>'}",
         "",
     ]
+    recommendation = result.get("recommendation", {})
+    if recommendation:
+        lines.extend(["## Recommendation", "", f"- Priority: `{recommendation.get('priority', 'low')}`"])
+        for reason in recommendation.get("reasons", []):
+            lines.append(f"- {reason}")
+        lines.append("")
+    nearby = result.get("nearby_comparisons") or []
+    if nearby:
+        lines.extend(["## Nearby Comparisons", ""])
+        lines.append("| Index | Kind | Instruction | Reason |")
+        lines.append("| ---: | --- | --- | --- |")
+        for item in nearby:
+            lines.append(f"| {item.get('index')} | `{item.get('kind')}` | `{item.get('instruction')}` | {item.get('reason')} |")
+        lines.append("")
     ctx = result.get("context", {})
     if ctx:
         lines.append("## Context")
