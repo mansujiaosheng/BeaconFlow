@@ -279,3 +279,179 @@ def list_benchmarks() -> dict[str, Any]:
             for name, case in BENCHMARK_CASES.items()
         },
     }
+
+
+def run_builtin_benchmarks(output_dir: str | Path | None = None) -> dict[str, Any]:
+    """运行内置 benchmark，不需要外部目标文件。
+
+    测试 BeaconFlow 核心功能是否正常工作：
+    - 模板库加载和生成
+    - 导入器解析
+    - Schema 验证
+    - 文件类型检测
+    - HTML 报告生成
+    - 建议引擎
+    """
+    import struct
+    import sys
+
+    out = Path(output_dir) if output_dir else Path("benchmark_builtin_results")
+    out.mkdir(parents=True, exist_ok=True)
+
+    results: dict[str, Any] = {
+        "status": "ok",
+        "checks": {},
+        "errors": [],
+        "passed": 0,
+        "failed": 0,
+    }
+
+    start = time.time()
+
+    # 测试1: 模板库加载
+    try:
+        from beaconflow.templates import FRIDA_TEMPLATES, ANGR_TEMPLATES, GDB_TEMPLATES, X64DBG_TEMPLATES
+        total_templates = len(FRIDA_TEMPLATES) + len(ANGR_TEMPLATES) + len(GDB_TEMPLATES) + len(X64DBG_TEMPLATES)
+        results["checks"]["templates_loaded"] = total_templates >= 10
+        if total_templates >= 10:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+    except Exception as e:
+        results["errors"].append(f"templates: {e}")
+        results["checks"]["templates_loaded"] = False
+        results["failed"] += 1
+
+    # 测试2: 模板生成
+    try:
+        from beaconflow.templates import generate_template
+        tmpl_out = out / "test_template.js"
+        result = generate_template("compare_strcmp_memcmp", str(tmpl_out))
+        results["checks"]["template_generated"] = result.get("status") == "ok"
+        if result.get("status") == "ok":
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+        tmpl_out.unlink(missing_ok=True)
+    except Exception as e:
+        results["errors"].append(f"template generate: {e}")
+        results["checks"]["template_generated"] = False
+        results["failed"] += 1
+
+    # 测试3: 导入器解析
+    try:
+        from beaconflow.importers import import_frida_log, import_gdb_log, import_angr_result
+        # 创建测试日志
+        frida_log = out / "test_frida.log"
+        frida_log.write_text('{"type":"compare","function":"strcmp","left":"A","right":"B"}\n', encoding="utf-8")
+        result = import_frida_log(str(frida_log))
+        results["checks"]["frida_import"] = result.get("status") == "ok" and result.get("total_events", 0) >= 1
+        if results["checks"]["frida_import"]:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+    except Exception as e:
+        results["errors"].append(f"importer: {e}")
+        results["checks"]["frida_import"] = False
+        results["failed"] += 1
+
+    # 测试4: Schema 验证
+    try:
+        from beaconflow.schemas import list_schemas, get_schema
+        schemas = list_schemas()
+        results["checks"]["schema_available"] = len(schemas) >= 10
+        if len(schemas) >= 10:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+    except Exception as e:
+        results["errors"].append(f"schema: {e}")
+        results["checks"]["schema_available"] = False
+        results["failed"] += 1
+
+    # 测试5: 文件类型检测
+    try:
+        from beaconflow.triage import _detect_target_type
+        # 创建临时 PE 文件头
+        pe_stub = out / "test_pe_stub.exe"
+        pe_stub.write_bytes(b"MZ" + b"\x00" * 258)
+        info = _detect_target_type(pe_stub)
+        results["checks"]["pe_detection"] = info.get("type") == "pe"
+        if info.get("type") == "pe":
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+    except Exception as e:
+        results["errors"].append(f"detection: {e}")
+        results["checks"]["pe_detection"] = False
+        results["failed"] += 1
+
+    # 测试6: HTML 报告生成
+    try:
+        from beaconflow.reports.html_report import markdown_to_html, json_to_html
+        html = markdown_to_html("# Test\nHello **world**", title="Test")
+        results["checks"]["html_generation"] = "<h1>" in html and "world" in html
+        if results["checks"]["html_generation"]:
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+    except Exception as e:
+        results["errors"].append(f"html: {e}")
+        results["checks"]["html_generation"] = False
+        results["failed"] += 1
+
+    # 测试7: 建议引擎
+    try:
+        from beaconflow.templates import suggest_hook
+        result = suggest_hook()
+        results["checks"]["suggest_hook"] = result.get("status") == "ok"
+        if result.get("status") == "ok":
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+    except Exception as e:
+        results["errors"].append(f"suggest: {e}")
+        results["checks"]["suggest_hook"] = False
+        results["failed"] += 1
+
+    # 测试8: triage-pyc (创建临时 .pyc)
+    try:
+        import marshal
+        import types
+        pyc_path = out / "test_builtin.pyc"
+        # 创建简单 code object
+        code = compile("x = 1 + 2", "<test>", "exec")
+        # 写入 .pyc 格式
+        import struct
+        import sys
+        pyc_data = struct.pack("<H", 0x0df3)  # magic
+        pyc_data += struct.pack("<H", 0x0000)  # flags
+        pyc_data += struct.pack("<I", 0)  # timestamp
+        pyc_data += struct.pack("<I", 0)  # source size
+        pyc_data += marshal.dumps(code)
+        pyc_path.write_bytes(pyc_data)
+
+        from beaconflow.triage import triage_pyc
+        pyc_out = out / "pyc_output"
+        result = triage_pyc(str(pyc_path), str(pyc_out))
+        results["checks"]["pyc_triage"] = result.get("status") in ("ok", "partial")
+        if result.get("status") in ("ok", "partial"):
+            results["passed"] += 1
+        else:
+            results["failed"] += 1
+    except Exception as e:
+        results["errors"].append(f"pyc triage: {e}")
+        results["checks"]["pyc_triage"] = False
+        results["failed"] += 1
+
+    results["elapsed_seconds"] = round(time.time() - start, 2)
+    results["total_checks"] = results["passed"] + results["failed"]
+
+    if results["failed"] > 0:
+        results["status"] = "partial"
+
+    # 保存结果
+    result_path = out / "builtin_benchmark_result.json"
+    result_path.write_text(json.dumps(results, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+
+    return results

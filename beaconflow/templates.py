@@ -288,6 +288,187 @@ Java.perform(function() {
 });
 """,
     },
+    "android_register_natives": {
+        "name": "android_register_natives",
+        "description": "Hook JNI RegisterNatives，捕获动态注册的 native 方法",
+        "category": "android",
+        "code": r"""
+"use strict";
+
+// Hook android_dlopen_ext 和 dlopen 来捕获 so 加载
+function hookRegisterNatives(soName) {
+    var targetSo = soName || "%SO_NAME%";
+    var found = false;
+
+    function tryHook(so) {
+        if (found) return;
+        var exports = Module.enumerateExportsSync(so);
+        var JNI_OnLoad = null;
+        for (var i = 0; i < exports.length; i++) {
+            if (exports[i].name === "JNI_OnLoad") {
+                JNI_OnLoad = exports[i].address;
+                break;
+            }
+        }
+        if (JNI_OnLoad) {
+            Interceptor.attach(JNI_OnLoad, {
+                onEnter: function(args) {
+                    send({type: "JNI_OnLoad", so: so, javaVM: args[0]});
+                }
+            });
+        }
+
+        // Hook RegisterNatives in libart.so
+        var art = Process.findModuleByName("libart.so");
+        if (art) {
+            var symbols = Module.enumerateExportsSync("libart.so");
+            for (var i = 0; i < symbols.length; i++) {
+                if (symbols[i].name.indexOf("RegisterNatives") !== -1) {
+                    Interceptor.attach(symbols[i].address, {
+                        onEnter: function(args) {
+                            var env = args[0];
+                            var jclass = args[1];
+                            var methods = args[2];
+                            var nMethods = args[3].toInt32();
+                            send({type: "RegisterNatives", so: so, nMethods: nMethods, methodsPtr: methods});
+                        }
+                    });
+                    break;
+                }
+            }
+        }
+        found = true;
+    }
+
+    // 监控 so 加载
+    var dlopen = Module.findExportByName(null, "android_dlopen_ext") || Module.findExportByName(null, "dlopen");
+    if (dlopen) {
+        Interceptor.attach(dlopen, {
+            onEnter: function(args) {
+                this.path = args[0].readCString();
+            },
+            onLeave: function(retval) {
+                if (this.path && this.path.indexOf(targetSo) !== -1) {
+                    tryHook(this.path);
+                }
+            }
+        });
+    }
+
+    // 如果 so 已加载，直接 hook
+    var mod = Process.findModuleByName(targetSo);
+    if (mod) {
+        tryHook(mod.name);
+    }
+}
+""",
+    },
+    "android_system_loadlibrary": {
+        "name": "android_system_loadlibrary",
+        "description": "Hook System.loadLibrary/load，捕获 native 库加载时机",
+        "category": "android",
+        "code": r"""
+"use strict";
+
+Java.perform(function() {
+    var System = Java.use("java.lang.System");
+    var Runtime = Java.use("java.lang.Runtime");
+
+    System.loadLibrary.implementation = function(libname) {
+        send({type: "System.loadLibrary", libname: libname});
+        this.loadLibrary(libname);
+    };
+
+    System.load.implementation = function(filename) {
+        send({type: "System.load", filename: filename});
+        this.load(filename);
+    };
+
+    Runtime.loadLibrary0.implementation = function(from, libname) {
+        send({type: "Runtime.loadLibrary0", from: from ? from.toString() : "null", libname: libname});
+        return this.loadLibrary0(from, libname);
+    };
+
+    Runtime.load0.implementation = function(from, filename) {
+        send({type: "Runtime.load0", from: from ? from.toString() : "null", filename: filename});
+        return this.load0(from, filename);
+    };
+});
+""",
+    },
+    "android_native_interceptor": {
+        "name": "android_native_interceptor",
+        "description": "Frida Interceptor hook native .so 中的导出函数",
+        "category": "android",
+        "code": r"""
+"use strict";
+
+// Hook native .so 导出函数
+var soName = "%SO_NAME%";
+var funcName = "%FUNC_NAME%";
+
+function hookNativeExports() {
+    var mod = Process.findModuleByName(soName);
+    if (!mod) {
+        send({type: "error", message: "Module not found: " + soName + ", waiting..."});
+
+        // 等待 so 加载
+        var dlopen = Module.findExportByName(null, "android_dlopen_ext") || Module.findExportByName(null, "dlopen");
+        if (dlopen) {
+            Interceptor.attach(dlopen, {
+                onEnter: function(args) {
+                    this.path = args[0].readCString();
+                },
+                onLeave: function(retval) {
+                    if (this.path && this.path.indexOf(soName) !== -1) {
+                        setTimeout(hookNativeExports, 100);
+                    }
+                }
+            });
+        }
+        return;
+    }
+
+    send({type: "module_found", name: mod.name, base: mod.base.toString(), size: mod.size});
+
+    if (funcName && funcName !== "%FUNC_NAME%") {
+        // Hook 指定函数
+        var addr = Module.findExportByName(soName, funcName);
+        if (addr) {
+            Interceptor.attach(addr, {
+                onEnter: function(args) {
+                    send({type: "native_call", func: funcName, arg0: args[0], arg1: args[1], caller: this.returnAddress.toString()});
+                },
+                onLeave: function(retval) {
+                    send({type: "native_ret", func: funcName, retval: retval.toString()});
+                }
+            });
+            send({type: "hooked", func: funcName, addr: addr.toString()});
+        } else {
+            send({type: "error", message: "Export not found: " + funcName});
+        }
+    } else {
+        // 列出所有导出函数
+        var exports = mod.enumerateExports();
+        var interesting = [];
+        for (var i = 0; i < exports.length; i++) {
+            var e = exports[i];
+            var name = e.name.toLowerCase();
+            if (name.indexOf("check") !== -1 || name.indexOf("verify") !== -1 ||
+                name.indexOf("encrypt") !== -1 || name.indexOf("decrypt") !== -1 ||
+                name.indexOf("flag") !== -1 || name.indexOf("key") !== -1 ||
+                name.indexOf("sign") !== -1 || name.indexOf("validate") !== -1 ||
+                name.indexOf("jni") !== -1 || name.indexOf("native") !== -1) {
+                interesting.push({name: e.name, address: e.address.toString(), type: e.type});
+            }
+        }
+        send({type: "interesting_exports", count: interesting.length, exports: interesting});
+    }
+}
+
+hookNativeExports();
+""",
+    },
 }
 
 
@@ -502,8 +683,13 @@ def suggest_hook(
     roles_result: dict[str, Any] | None = None,
     trace_compare_result: dict[str, Any] | None = None,
     target_type: str = "native",
+    apk_summary: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """根据已有分析证据推荐 Frida hook 模板。"""
+    """根据已有分析证据推荐 Frida hook 模板。
+
+    target_type: "native" | "android"
+    apk_summary: triage_apk 的 summary 结果，用于增强 Android 场景推荐
+    """
     recommendations: list[dict[str, Any]] = []
     reasons: list[str] = []
 
@@ -558,22 +744,80 @@ def suggest_hook(
                 "reason": f"检测到 {len(critical_dps)} 个关键决策点，可在这些地址 dump 内存",
             })
 
-    if target_type == "android":
-        recommendations.append({
-            "template": "jni_getstringutfchars",
-            "priority": "high",
-            "reason": "Android 目标，hook JNI GetStringUTFChars 可捕获 Java→native 字符串",
-        })
-        recommendations.append({
-            "template": "android_string_equals",
-            "priority": "high",
-            "reason": "Android 目标，hook String.equals 可捕获 Java 层字符串比较",
-        })
-        recommendations.append({
-            "template": "android_crypto_base64_cipher",
-            "priority": "medium",
-            "reason": "Android 目标，hook Base64/Cipher/MessageDigest 可捕获加解密",
-        })
+    # Android 场景推荐（基于 APK summary 或 target_type）
+    if target_type == "android" or apk_summary:
+        # 基于 APK summary 的智能推荐
+        if apk_summary:
+            crypto_apis = apk_summary.get("crypto_apis", [])
+            base64_apis = apk_summary.get("base64_apis", [])
+            string_compare_apis = apk_summary.get("string_compare_apis", [])
+            jni_methods = apk_summary.get("jni_methods", [])
+            native_libs = apk_summary.get("native_libs", [])
+            interesting_classes = apk_summary.get("interesting_classes", [])
+
+            if crypto_apis or base64_apis:
+                recommendations.append({
+                    "template": "android_crypto_base64_cipher",
+                    "priority": "high",
+                    "reason": f"APK 中发现加密 API: {', '.join((crypto_apis + base64_apis)[:5])}",
+                })
+                reasons.append("crypto/base64 APIs in APK")
+
+            if string_compare_apis:
+                recommendations.append({
+                    "template": "android_string_equals",
+                    "priority": "high",
+                    "reason": f"APK 中发现字符串比较 API: {', '.join(string_compare_apis[:3])}，可能用于验证逻辑",
+                })
+                reasons.append("string compare APIs in APK")
+
+            if jni_methods:
+                recommendations.append({
+                    "template": "android_register_natives",
+                    "priority": "high",
+                    "reason": f"APK 中发现 JNI 调用: {', '.join(jni_methods[:3])}，hook RegisterNatives 可捕获动态注册",
+                })
+                recommendations.append({
+                    "template": "android_system_loadlibrary",
+                    "priority": "medium",
+                    "reason": "APK 使用 native 库，hook System.loadLibrary 可捕获加载时机",
+                })
+                reasons.append("JNI methods in APK")
+
+            if native_libs:
+                for so in native_libs[:3]:
+                    recommendations.append({
+                        "template": "android_native_interceptor",
+                        "priority": "high",
+                        "reason": f"发现 native library: {so}，使用 Interceptor hook 导出函数",
+                        "params": {"SO_NAME": so, "FUNC_NAME": ""},
+                    })
+                    reasons.append(f"native lib: {so}")
+
+            if interesting_classes:
+                recommendations.append({
+                    "template": "android_string_equals",
+                    "priority": "medium",
+                    "reason": f"发现可疑类: {', '.join(interesting_classes[:3])}，建议 hook 其关键方法",
+                })
+
+        # 通用 Android 推荐（当没有 APK summary 时）
+        if not apk_summary:
+            recommendations.append({
+                "template": "jni_getstringutfchars",
+                "priority": "high",
+                "reason": "Android 目标，hook JNI GetStringUTFChars 可捕获 Java→native 字符串",
+            })
+            recommendations.append({
+                "template": "android_string_equals",
+                "priority": "high",
+                "reason": "Android 目标，hook String.equals 可捕获 Java 层字符串比较",
+            })
+            recommendations.append({
+                "template": "android_crypto_base64_cipher",
+                "priority": "medium",
+                "reason": "Android 目标，hook Base64/Cipher/MessageDigest 可捕获加解密",
+            })
 
     if not recommendations:
         recommendations.append({
@@ -585,8 +829,9 @@ def suggest_hook(
     seen: set[str] = set()
     unique: list[dict[str, Any]] = []
     for r in recommendations:
-        if r["template"] not in seen:
-            seen.add(r["template"])
+        key = r["template"] + str(r.get("params", ""))
+        if key not in seen:
+            seen.add(key)
             unique.append(r)
 
     return {

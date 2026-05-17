@@ -615,3 +615,111 @@ beaconflow export-annotations --output-dir annotations/ --coverage cov.json --de
 | `dr-run-client` | CLI only |
 | `dr-import-trace` | CLI only |
 | `schema --validate` | CLI only |
+| `triage-pyc` | CLI only |
+| `to-html` | CLI only |
+| `benchmark --list/--run/--run-all` | CLI only |
+
+## 21. triage-pyc：Python .pyc 一键分析
+
+```python
+from beaconflow.triage import triage_pyc
+
+result = triage_pyc(
+    target_path="checker.pyc",
+    output_dir="output",
+    disassemble=True,  # 可选，同时输出 dis 反汇编
+)
+```
+
+输出文件：
+- `pyc_info.json`：magic number、Python 版本、时间戳
+- `code_analysis.json`：递归 code object 分析
+- `suspicious_functions.json`：可疑函数列表
+- `disassembly.json`：dis 反汇编结果（需 `disassemble=True`）
+- `triage_pyc_summary.json`：汇总报告
+
+CLI：
+```powershell
+python -m beaconflow.cli triage-pyc --target checker.pyc --output-dir output --disassemble
+```
+
+## 22. HTML 报告
+
+### 方式 1：--format html/html-json
+
+所有分析命令的 `--format` 参数新增 `html` 和 `html-json`：
+
+```powershell
+python -m beaconflow.cli analyze --metadata metadata.json --coverage sample.drcov --format html --output report.html
+python -m beaconflow.cli analyze --metadata metadata.json --coverage sample.drcov --format html-json --output report.html
+```
+
+- `html`：先转 Markdown 再转 HTML，保留表格和格式
+- `html-json`：直接从 JSON 转 HTML，带摘要卡片和 AI Digest 展示
+
+### 方式 2：to-html 命令
+
+将已有的 Markdown 或 JSON 报告转换为 HTML：
+
+```powershell
+python -m beaconflow.cli to-html --input report.md --output report.html --title "Coverage Report"
+python -m beaconflow.cli to-html --input report.json --input-format json --output report.html
+```
+
+### Python API
+
+```python
+from beaconflow.reports.html_report import markdown_to_html, json_to_html
+
+# Markdown → HTML
+html = markdown_to_html(md_text, title="My Report")
+
+# JSON → HTML
+html = json_to_html(data_dict, title="My Report")
+```
+
+HTML 特性：
+- 暗色主题（GitHub Dark 风格）
+- 响应式布局
+- 表格、代码块、引用块样式
+- JSON 报告带摘要卡片和 AI Digest 展示
+- 可折叠的原始 JSON 详情
+
+## 23. Benchmark Cases
+
+标准化测试用例框架，用于验证 BeaconFlow 各功能在真实场景下的表现。
+
+```python
+from beaconflow.benchmark import list_benchmarks, run_benchmark, run_all_benchmarks
+
+# 列出所有 benchmark 用例
+cases = list_benchmarks()
+
+# 运行单个 benchmark
+result = run_benchmark("pyc_check", target_path="checker.pyc", output_dir="results")
+
+# 运行所有 benchmark
+summary = run_all_benchmarks(targets={"pyc_check": "checker.pyc"}, output_dir="results")
+```
+
+CLI：
+```powershell
+# 列出所有 benchmark
+python -m beaconflow.cli benchmark --list
+
+# 运行单个 benchmark
+python -m beaconflow.cli benchmark --run pyc_check --target checker.pyc --output-dir results
+
+# 运行所有 benchmark（需要 targets.json 映射文件名到目标路径）
+python -m beaconflow.cli benchmark --run-all --targets-json targets.json --output-dir results
+```
+
+内置 benchmark 用例：
+
+| 名称 | 类别 | 测试功能 |
+| --- | --- | --- |
+| `simple_flagchecker` | native | coverage, flow, decision_points, roles |
+| `tea_encryption` | native | coverage, flow, sig_match, roles |
+| `loongarch_flagchecker` | qemu | qemu_trace, flow, deflatten |
+| `wasm_vm` | wasm | wasm_analyze, metadata, sig_match, roles |
+| `pyc_check` | pyc | pyc_identify, code_analysis, suspicious_functions |

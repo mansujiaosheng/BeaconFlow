@@ -535,3 +535,257 @@ def case_to_markdown(summary: dict[str, Any]) -> str:
     lines.append("")
 
     return "\n".join(lines)
+
+
+_LARGE_FILE_THRESHOLD = 10 * 1024 * 1024  # 10MB，超过此大小视为 AI 不友好
+
+
+def case_check(root: str | None = None) -> dict[str, Any]:
+    """对工作区进行全面质量检查。
+
+    检查内容:
+        1. metadata 是否存在
+        2. run 信息是否存在
+        3. report 是否存在
+        4. report 是否包含 ai_digest
+        5. report 是否包含 evidence_id
+        6. report 是否包含 confidence
+        7. artifact path 是否失效
+        8. 是否存在过大的 AI 不友好文件
+        9. 是否存在 schema 不匹配文件
+        10. 是否缺少 next_actions
+    """
+    manifest = load_manifest(root)
+    if manifest is None:
+        return {
+            "status": "error",
+            "message": "工作区不存在，请先运行 init-case",
+            "checks": [],
+        }
+
+    root_path = _resolve_root(root)
+    case_path = _case_dir(root_path)
+    checks: list[dict[str, Any]] = []
+
+    # 检查1: metadata 是否存在
+    metadata_entries = manifest.get("metadata", {})
+    if metadata_entries:
+        for name, info in metadata_entries.items():
+            rel_path = info.get("path", "")
+            full_path = case_path / rel_path
+            if full_path.exists():
+                checks.append({
+                    "check": "metadata_exists",
+                    "name": name,
+                    "passed": True,
+                    "detail": f"metadata '{name}' 存在",
+                })
+            else:
+                checks.append({
+                    "check": "metadata_exists",
+                    "name": name,
+                    "passed": False,
+                    "detail": f"metadata '{name}' 路径失效: {rel_path}",
+                })
+    else:
+        checks.append({
+            "check": "metadata_exists",
+            "name": None,
+            "passed": False,
+            "detail": "无 metadata 记录",
+        })
+
+    # 检查2: run 信息是否存在
+    runs = manifest.get("runs", [])
+    if runs:
+        for i, run in enumerate(runs):
+            rel_path = run.get("path")
+            if rel_path:
+                full_path = case_path / rel_path
+                if full_path.exists():
+                    checks.append({
+                        "check": "run_exists",
+                        "name": run.get("name", f"run_{i}"),
+                        "passed": True,
+                        "detail": f"run '{run.get('name', f'run_{i}')}' 文件存在",
+                    })
+                else:
+                    checks.append({
+                        "check": "run_exists",
+                        "name": run.get("name", f"run_{i}"),
+                        "passed": False,
+                        "detail": f"run '{run.get('name', f'run_{i}')}' 路径失效: {rel_path}",
+                    })
+    else:
+        checks.append({
+            "check": "run_exists",
+            "name": None,
+            "passed": False,
+            "detail": "无 run 记录",
+        })
+
+    # 检查3-6, 9-10: 报告质量检查
+    reports = manifest.get("reports", [])
+    if reports:
+        for i, report in enumerate(reports):
+            rel_path = report.get("path", "")
+            full_path = case_path / rel_path
+            report_name = report.get("name", f"report_{i}")
+
+            # 检查3: report 文件是否存在
+            if not full_path.exists():
+                checks.append({
+                    "check": "report_exists",
+                    "name": report_name,
+                    "passed": False,
+                    "detail": f"报告 '{report_name}' 路径失效: {rel_path}",
+                })
+                continue
+
+            checks.append({
+                "check": "report_exists",
+                "name": report_name,
+                "passed": True,
+                "detail": f"报告 '{report_name}' 文件存在",
+            })
+
+            # 读取报告内容进行深度检查
+            try:
+                report_data = json.loads(full_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                checks.append({
+                    "check": "report_readable",
+                    "name": report_name,
+                    "passed": False,
+                    "detail": f"报告 '{report_name}' 无法解析为 JSON",
+                })
+                continue
+
+            if not isinstance(report_data, dict):
+                continue
+
+            # 检查4: report 是否包含 ai_digest
+            has_ai_digest = "ai_digest" in report_data or "ai_report" in report_data
+            checks.append({
+                "check": "ai_digest",
+                "name": report_name,
+                "passed": has_ai_digest,
+                "detail": f"报告 '{report_name}' {'包含' if has_ai_digest else '缺少'} ai_digest 字段",
+            })
+
+            # 检查5: report 是否包含 evidence_id（在 top_findings 中）
+            top_findings = report_data.get("ai_digest", {}).get("top_findings", [])
+            has_evidence_id = any("evidence_id" in f for f in top_findings) if top_findings else False
+            checks.append({
+                "check": "evidence_id",
+                "name": report_name,
+                "passed": has_evidence_id or not top_findings,
+                "detail": f"报告 '{report_name}' {'包含' if has_evidence_id else '缺少'} evidence_id",
+            })
+
+            # 检查6: report 是否包含 confidence
+            has_confidence = (
+                "report_confidence" in report_data
+                or "confidence" in report_data
+                or "ai_digest" in report_data and "confidence" in report_data.get("ai_digest", {})
+            )
+            checks.append({
+                "check": "confidence",
+                "name": report_name,
+                "passed": has_confidence,
+                "detail": f"报告 '{report_name}' {'包含' if has_confidence else '缺少'} confidence 字段",
+            })
+
+            # 检查10: 是否缺少 next_actions / recommended_actions
+            has_next_actions = (
+                "recommended_actions" in report_data
+                or "next_actions" in report_data
+                or "ai_digest" in report_data and "recommended_actions" in report_data.get("ai_digest", {})
+            )
+            checks.append({
+                "check": "next_actions",
+                "name": report_name,
+                "passed": has_next_actions,
+                "detail": f"报告 '{report_name}' {'包含' if has_next_actions else '缺少'} next_actions/recommended_actions",
+            })
+
+            # 检查9: schema 验证
+            from beaconflow.schemas import validate_all_reports as _validate_all
+            schema_result = _validate_all(str(full_path.parent), recursive=False)
+            matched = [r for r in schema_result.get("results", []) if r["filename"] == full_path.name and r["valid"] is False]
+            if matched:
+                checks.append({
+                    "check": "schema_match",
+                    "name": report_name,
+                    "passed": False,
+                    "detail": f"报告 '{report_name}' schema 不匹配: {matched[0].get('errors', [])[:3]}",
+                })
+            else:
+                checks.append({
+                    "check": "schema_match",
+                    "name": report_name,
+                    "passed": True,
+                    "detail": f"报告 '{report_name}' schema 验证通过或跳过",
+                })
+    else:
+        checks.append({
+            "check": "report_exists",
+            "name": None,
+            "passed": False,
+            "detail": "无 report 记录",
+        })
+
+    # 检查7: artifact path 是否失效
+    target_path = case_path / "target"
+    if not target_path.exists():
+        checks.append({
+            "check": "target_exists",
+            "name": None,
+            "passed": False,
+            "detail": "目标文件(target)不存在或已失效",
+        })
+    else:
+        checks.append({
+            "check": "target_exists",
+            "name": None,
+            "passed": True,
+            "detail": "目标文件(target)存在",
+        })
+
+    # 检查8: 是否存在过大的 AI 不友好文件
+    large_files: list[str] = []
+    for subdir in DEFAULT_DIRS:
+        sub_path = case_path / subdir
+        if sub_path.exists():
+            for f in sub_path.rglob("*"):
+                if f.is_file() and f.stat().st_size > _LARGE_FILE_THRESHOLD:
+                    large_files.append(f"{f.relative_to(case_path)} ({f.stat().st_size // (1024*1024)}MB)")
+
+    if large_files:
+        checks.append({
+            "check": "large_files",
+            "name": None,
+            "passed": False,
+            "detail": f"发现过大文件(>{_LARGE_FILE_THRESHOLD // (1024*1024)}MB): {', '.join(large_files)}",
+        })
+    else:
+        checks.append({
+            "check": "large_files",
+            "name": None,
+            "passed": True,
+            "detail": "未发现过大文件",
+        })
+
+    # 汇总
+    total_checks = len(checks)
+    passed = sum(1 for c in checks if c["passed"])
+    failed = sum(1 for c in checks if not c["passed"])
+
+    return {
+        "status": "ok" if failed == 0 else "issues_found",
+        "case_dir": str(case_path),
+        "total_checks": total_checks,
+        "passed": passed,
+        "failed": failed,
+        "checks": checks,
+    }
