@@ -1,4 +1,4 @@
-﻿# BeaconFlow
+﻿﻿# BeaconFlow
 
 BeaconFlow 是一个面向 AI Agent 的 headless 覆盖率与控制流分析工具。
 
