@@ -25,9 +25,26 @@ from beaconflow.analysis.input_impact import input_impact, input_impact_to_markd
 from beaconflow.analysis.decision_points import find_decision_points
 from beaconflow.analysis.role_detector import analyze_roles
 from beaconflow.update_checker import check_for_update, update_check_to_markdown
+from beaconflow.templates import suggest_hook, suggest_angr, suggest_debug, generate_template, list_templates
+from beaconflow.importers import import_frida_log, import_gdb_log, import_angr_result, import_jadx_summary
+from beaconflow.triage import triage as triage_auto, triage_native, triage_qemu, triage_wasm, triage_pyc
+from beaconflow.benchmark import run_benchmark, run_all_benchmarks, run_builtin_benchmarks, list_benchmarks
 
 
 TOOLS: dict[str, dict[str, Any]] = {
+    "recommend_tool": {
+        "description": "[basic] Recommend the best BeaconFlow tool based on user goal. Call this first when unsure which tool to use.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "user_goal": {"type": "string", "description": "What the user wants to accomplish"},
+                "target_info": {"type": "string", "description": "Target binary info (type, arch, format)"},
+                "available_files": {"type": "string", "description": "Available files (metadata, coverage, logs)"},
+                "case_state": {"type": "string", "description": "Current case workspace state"},
+            },
+            "required": [],
+        },
+    },
     "analyze_coverage": {
         "description": "Analyze a drcov coverage file against IDA-exported metadata.",
         "inputSchema": {
@@ -708,6 +725,154 @@ TOOLS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "triage_target": {
+        "description": "[basic] Unified triage entry: auto-detect target file type (PE/ELF/WASM/PYC) and run the appropriate analysis workflow. Call this first when you get a new binary.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "target_path": {"type": "string", "description": "Target binary file path."},
+                "output_dir": {"type": "string", "description": "Output directory for analysis results."},
+                "stdin": {"type": "string", "description": "Stdin data to send to the target."},
+                "target_args": {"type": "array", "items": {"type": "string"}, "description": "Arguments to pass to the target."},
+                "qemu_arch": {"type": "string", "description": "QEMU arch for non-x86 ELF (e.g. loongarch64, arm, mips)."},
+                "arch": {"type": "string", "description": "Override detected architecture (e.g. x86, x64)."},
+                "timeout": {"type": "integer", "default": 120, "description": "Timeout in seconds for target execution."},
+                "disassemble": {"type": "boolean", "default": False, "description": "Enable disassembly for PYC targets."},
+            },
+            "required": ["target_path", "output_dir"],
+        },
+    },
+    "suggest_hook": {
+        "description": "[basic] Suggest Frida hook templates based on analysis findings. Generates ready-to-use hook scripts for common patterns (strcmp, memcmp, crypto, etc.).",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON for context-aware suggestions."},
+                "target_type": {"type": "string", "description": "Target type hint (e.g. 'android', 'native', 'wasm')."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+        },
+    },
+    "suggest_angr": {
+        "description": "[basic] Suggest angr script templates based on analysis findings. Generates ready-to-use angr scripts for constraint solving.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON for context-aware suggestions."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+        },
+    },
+    "suggest_debug": {
+        "description": "[basic] Suggest debugger script templates (GDB/x64dbg) based on analysis findings.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "metadata_path": {"type": "string", "description": "Path to metadata JSON for context-aware suggestions."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+            },
+        },
+    },
+    "list_templates": {
+        "description": "[basic] List all available template names and descriptions. Use before generate_template to find the right template.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "Filter by category (frida, angr, gdb, x64dbg)."},
+            },
+        },
+    },
+    "generate_template": {
+        "description": "[basic] Generate a specific template file with parameter substitution. Use list_templates first to find available templates.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "template_name": {"type": "string", "description": "Template name (e.g. 'compare_strcmp_memcmp')."},
+                "output_path": {"type": "string", "description": "Output file path for the generated template."},
+                "params": {"type": "object", "description": "Parameters to substitute in the template (e.g. {\"FUNCTION\": \"check_flag\"}).", "additionalProperties": {"type": "string"}},
+            },
+            "required": ["template_name", "output_path"],
+        },
+    },
+    "import_frida_log": {
+        "description": "[basic] Import and parse a Frida trace log file. Extracts compare events, call events, and other runtime evidence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "log_path": {"type": "string", "description": "Path to Frida log file."},
+                "output_dir": {"type": "string", "description": "Optional output directory for parsed results."},
+            },
+            "required": ["log_path"],
+        },
+    },
+    "import_gdb_log": {
+        "description": "[basic] Import and parse a GDB trace log file. Extracts register values at breakpoints and compare events.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "log_path": {"type": "string", "description": "Path to GDB log file."},
+                "output_dir": {"type": "string", "description": "Optional output directory for parsed results."},
+            },
+            "required": ["log_path"],
+        },
+    },
+    "import_angr_result": {
+        "description": "[basic] Import and parse an angr analysis result file. Extracts constraints, solved values, and symbolic execution evidence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "result_path": {"type": "string", "description": "Path to angr result JSON file."},
+                "output_dir": {"type": "string", "description": "Optional output directory for parsed results."},
+            },
+            "required": ["result_path"],
+        },
+    },
+    "import_jadx_summary": {
+        "description": "[basic] Import and parse a JADX decompilation summary. Extracts class info, method signatures, and Android-specific evidence.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "summary_path": {"type": "string", "description": "Path to JADX summary directory or file."},
+                "output_dir": {"type": "string", "description": "Optional output directory for parsed results."},
+            },
+            "required": ["summary_path"],
+        },
+    },
+    "schema_validate": {
+        "description": "[advanced] Validate a BeaconFlow report against its schema. Checks required fields, types, and structure.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "report_path": {"type": "string", "description": "Path to report JSON file to validate."},
+                "kind": {"type": "string", "description": "Report kind hint (coverage, flow, decision_points, etc.)."},
+            },
+            "required": ["report_path"],
+        },
+    },
+    "to_html": {
+        "description": "[advanced] Convert a BeaconFlow report or markdown to HTML for human-readable viewing.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "report_path": {"type": "string", "description": "Path to report JSON or markdown file."},
+                "output_path": {"type": "string", "description": "Output HTML file path."},
+                "title": {"type": "string", "default": "BeaconFlow Report", "description": "HTML page title."},
+            },
+            "required": ["report_path", "output_path"],
+        },
+    },
+    "benchmark": {
+        "description": "[expert] Run BeaconFlow benchmark tests. Use --builtin for self-contained tests without external targets.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "builtin": {"type": "boolean", "default": False, "description": "Run built-in benchmarks (no external target needed)."},
+                "case_name": {"type": "string", "description": "Specific benchmark case to run."},
+                "target_path": {"type": "string", "description": "Target binary for external benchmark."},
+                "output_dir": {"type": "string", "description": "Output directory for benchmark results."},
+            },
+        },
+    },
 }
 
 
@@ -1035,6 +1200,15 @@ def _load_many_address_logs(arguments: dict[str, Any]):
 
 
 def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    if name == "recommend_tool":
+        result = _recommend_tool(
+            user_goal=arguments.get("user_goal", ""),
+            target_info=arguments.get("target_info", ""),
+            available_files=arguments.get("available_files", ""),
+            case_state=arguments.get("case_state", ""),
+        )
+        return _tool_result(result)
+
     if name == "analyze_coverage":
         metadata = load_metadata(arguments["metadata_path"])
         coverage = load_drcov(arguments["coverage_path"])
@@ -1682,6 +1856,130 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
             return _tool_result(update_check_to_markdown(result))
         return _tool_result(result)
 
+    if name == "triage_target":
+        result = triage_auto(
+            target_path=arguments["target_path"],
+            output_dir=arguments["output_dir"],
+            stdin=arguments.get("stdin"),
+            target_args=arguments.get("target_args"),
+            qemu_arch=arguments.get("qemu_arch"),
+            arch=arguments.get("arch"),
+            timeout=arguments.get("timeout", 120),
+            disassemble=arguments.get("disassemble", False),
+        )
+        return _tool_result(result)
+
+    if name == "suggest_hook":
+        metadata = None
+        if arguments.get("metadata_path"):
+            try:
+                metadata = load_metadata(arguments["metadata_path"])
+            except Exception:
+                pass
+        result = suggest_hook(
+            metadata=metadata,
+            target_type=arguments.get("target_type"),
+        )
+        return _tool_result(result)
+
+    if name == "suggest_angr":
+        metadata = None
+        if arguments.get("metadata_path"):
+            try:
+                metadata = load_metadata(arguments["metadata_path"])
+            except Exception:
+                pass
+        result = suggest_angr(metadata=metadata)
+        return _tool_result(result)
+
+    if name == "suggest_debug":
+        metadata = None
+        if arguments.get("metadata_path"):
+            try:
+                metadata = load_metadata(arguments["metadata_path"])
+            except Exception:
+                pass
+        result = suggest_debug(metadata=metadata)
+        return _tool_result(result)
+
+    if name == "list_templates":
+        result = list_templates(category=arguments.get("category"))
+        return _tool_result(result)
+
+    if name == "generate_template":
+        result = generate_template(
+            template_name=arguments["template_name"],
+            output_path=arguments["output_path"],
+            params=arguments.get("params"),
+        )
+        return _tool_result(result)
+
+    if name == "import_frida_log":
+        result = import_frida_log(
+            log_path=arguments["log_path"],
+            output_dir=arguments.get("output_dir"),
+        )
+        return _tool_result(result)
+
+    if name == "import_gdb_log":
+        result = import_gdb_log(
+            log_path=arguments["log_path"],
+            output_dir=arguments.get("output_dir"),
+        )
+        return _tool_result(result)
+
+    if name == "import_angr_result":
+        result = import_angr_result(
+            result_path=arguments["result_path"],
+            output_dir=arguments.get("output_dir"),
+        )
+        return _tool_result(result)
+
+    if name == "import_jadx_summary":
+        result = import_jadx_summary(
+            summary_path=arguments["summary_path"],
+            output_dir=arguments.get("output_dir"),
+        )
+        return _tool_result(result)
+
+    if name == "schema_validate":
+        from beaconflow.schemas import validate_report_strict
+        report_data = json.loads(Path(arguments["report_path"]).read_text(encoding="utf-8"))
+        kind = arguments.get("kind") or infer_report_kind(report_data)
+        result = validate_report_strict(kind, report_data)
+        return _tool_result(result)
+
+    if name == "to_html":
+        from beaconflow.reports.html_report import markdown_to_html, json_to_html
+        report_path = Path(arguments["report_path"])
+        output_path = Path(arguments["output_path"])
+        content = report_path.read_text(encoding="utf-8")
+        title = arguments.get("title", "BeaconFlow Report")
+        if report_path.suffix == ".json":
+            try:
+                report_data = json.loads(content)
+                html = json_to_html(report_data, title=title)
+            except json.JSONDecodeError:
+                html = markdown_to_html(content, title=title)
+        else:
+            html = markdown_to_html(content, title=title)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(html, encoding="utf-8")
+        return _tool_result({"status": "ok", "output_path": str(output_path)})
+
+    if name == "benchmark":
+        if arguments.get("builtin"):
+            result = run_builtin_benchmarks(output_dir=arguments.get("output_dir"))
+        elif arguments.get("case_name"):
+            result = run_benchmark(
+                arguments["case_name"],
+                target_path=arguments.get("target_path"),
+                output_dir=arguments.get("output_dir"),
+            )
+        else:
+            result = list_benchmarks()
+        return _tool_result(result)
+
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -1825,6 +2123,188 @@ def _read_resource(uri: str) -> str:
     return json.dumps({"error": f"Unknown resource URI: {uri}"}, indent=2)
 
 
+# MCP 工具分层定义
+TOOL_TIERS: dict[str, dict[str, str]] = {
+    # Basic：默认推荐给 AI 用
+    "triage_target": {"tier": "basic", "when_to_use": "首次分析新目标时使用，自动判断文件类型并运行对应工作流"},
+    "summarize_case": {"tier": "basic", "when_to_use": "查看当前分析进度、下一步怎么做、AI 交接时优先使用"},
+    "recommend_tool": {"tier": "basic", "when_to_use": "不确定该用哪个工具时，先调用此工具获取推荐"},
+    "suggest_hook": {"tier": "basic", "when_to_use": "生成 Frida hook 模板时使用"},
+    "suggest_angr": {"tier": "basic", "when_to_use": "生成 angr 求解脚本时使用"},
+    "suggest_debug": {"tier": "basic", "when_to_use": "生成调试器脚本时使用"},
+    "list_templates": {"tier": "basic", "when_to_use": "查看可用模板列表时使用"},
+    "generate_template": {"tier": "basic", "when_to_use": "生成指定模板文件时使用"},
+    "import_frida_log": {"tier": "basic", "when_to_use": "导入 Frida 运行时追踪结果时使用"},
+    "import_gdb_log": {"tier": "basic", "when_to_use": "导入 GDB 调试日志时使用"},
+    "import_angr_result": {"tier": "basic", "when_to_use": "导入 angr 求解结果时使用"},
+    "import_jadx_summary": {"tier": "basic", "when_to_use": "导入 JADX 反编译摘要时使用"},
+    "doctor": {"tier": "basic", "when_to_use": "检查环境依赖时使用"},
+    "init_case": {"tier": "basic", "when_to_use": "初始化 case workspace 时使用"},
+    "add_metadata_to_case": {"tier": "basic", "when_to_use": "添加 metadata 到 case 时使用"},
+    "add_run_to_case": {"tier": "basic", "when_to_use": "添加运行记录到 case 时使用"},
+    "add_report_to_case": {"tier": "basic", "when_to_use": "添加分析报告到 case 时使用"},
+    "add_note_to_case": {"tier": "basic", "when_to_use": "添加笔记到 case 时使用"},
+    "list_case_runs": {"tier": "basic", "when_to_use": "列出 case 中的运行记录"},
+    "list_case_reports": {"tier": "basic", "when_to_use": "列出 case 中的分析报告"},
+    "list_case_notes": {"tier": "basic", "when_to_use": "列出 case 中的笔记"},
+    # Advanced：需要一定经验
+    "analyze_coverage": {"tier": "advanced", "when_to_use": "分析 drcov 覆盖率时使用"},
+    "diff_coverage": {"tier": "advanced", "when_to_use": "对比两次覆盖率差异时使用"},
+    "analyze_flow": {"tier": "advanced", "when_to_use": "恢复执行流时使用"},
+    "diff_flow": {"tier": "advanced", "when_to_use": "对比两次执行流差异时使用"},
+    "record_flow": {"tier": "advanced", "when_to_use": "一步运行并记录执行流"},
+    "deflatten_flow": {"tier": "advanced", "when_to_use": "反控制流平坦化时使用"},
+    "deflatten_merge": {"tier": "advanced", "when_to_use": "合并多次反平坦化结果时使用"},
+    "recover_state_transitions": {"tier": "advanced", "when_to_use": "恢复状态变量转移时使用"},
+    "branch_rank": {"tier": "advanced", "when_to_use": "排序输入相关分支时使用"},
+    "find_decision_points": {"tier": "advanced", "when_to_use": "查找决策点时使用"},
+    "inspect_decision_point": {"tier": "advanced", "when_to_use": "查看决策点详情时使用"},
+    "detect_roles": {"tier": "advanced", "when_to_use": "检测函数角色时使用"},
+    "inspect_role": {"tier": "advanced", "when_to_use": "查看角色详情时使用"},
+    "trace_values": {"tier": "advanced", "when_to_use": "追踪比较值时使用"},
+    "analyze_compare": {"tier": "advanced", "when_to_use": "提取比较语义时使用"},
+    "input_taint": {"tier": "advanced", "when_to_use": "输入污点分析时使用"},
+    "feedback_explore": {"tier": "advanced", "when_to_use": "反馈式输入探索时使用"},
+    "inspect_block": {"tier": "advanced", "when_to_use": "查看基本块上下文时使用"},
+    "inspect_function": {"tier": "advanced", "when_to_use": "查看函数上下文时使用"},
+    "decompile_function": {"tier": "advanced", "when_to_use": "生成伪代码摘要时使用"},
+    "ai_summary": {"tier": "advanced", "when_to_use": "压缩报告为 AI digest 时使用"},
+    "schema_validate": {"tier": "advanced", "when_to_use": "验证报告 schema 时使用"},
+    "to_html": {"tier": "advanced", "when_to_use": "将报告转为 HTML 时使用"},
+    "trace_calls": {"tier": "advanced", "when_to_use": "运行时函数调用追踪时使用"},
+    "trace_compare": {"tier": "advanced", "when_to_use": "运行时比较指令追踪时使用"},
+    "auto_explore_loop": {"tier": "advanced", "when_to_use": "多轮反馈式输入探索时使用"},
+    "input_impact": {"tier": "advanced", "when_to_use": "差分输入影响分析时使用"},
+    # Expert：高级用户
+    "collect_drcov": {"tier": "expert", "when_to_use": "采集 drcov 覆盖率时使用"},
+    "collect_qemu": {"tier": "expert", "when_to_use": "采集 QEMU trace 时使用"},
+    "qemu_explore": {"tier": "expert", "when_to_use": "多输入路径探索时使用"},
+    "export_ghidra_metadata": {"tier": "expert", "when_to_use": "导出 Ghidra metadata 时使用"},
+    "metadata_from_address_log": {"tier": "expert", "when_to_use": "从地址日志生成 fallback metadata"},
+    "normalize_ir": {"tier": "expert", "when_to_use": "转换为统一 IR 时使用"},
+    "sig_match": {"tier": "expert", "when_to_use": "特征签名匹配时使用"},
+    "wasm_analyze": {"tier": "expert", "when_to_use": "WASM 分析时使用"},
+    "export_wasm_metadata": {"tier": "expert", "when_to_use": "WASM metadata 导出时使用"},
+    "benchmark": {"tier": "expert", "when_to_use": "运行 benchmark 测试时使用"},
+    "check_update": {"tier": "expert", "when_to_use": "检查更新时使用"},
+}
+
+
+def _recommend_tool(
+    user_goal: str = "",
+    target_info: str = "",
+    available_files: str = "",
+    case_state: str = "",
+) -> str:
+    """根据用户目标推荐最合适的工具。"""
+    goal = (user_goal + " " + target_info + " " + available_files + " " + case_state).lower()
+
+    recommendations: list[dict[str, str]] = []
+
+    # 根据目标关键词推荐
+    if any(kw in goal for kw in ("首次", "新目标", "刚拿到", "first", "new target", "triage")):
+        recommendations.append({
+            "tool": "triage_target",
+            "reason": "用户首次分析新目标，应先运行一键 triage",
+            "tier": "basic",
+        })
+
+    if any(kw in goal for kw in ("进度", "状态", "总结", "progress", "status", "summary")):
+        recommendations.append({
+            "tool": "summarize_case",
+            "reason": "用户想查看当前分析进度",
+            "tier": "basic",
+        })
+
+    if any(kw in goal for kw in ("覆盖率", "coverage", "覆盖")):
+        recommendations.append({
+            "tool": "analyze_coverage",
+            "reason": "用户想分析覆盖率",
+            "tier": "advanced",
+        })
+
+    if any(kw in goal for kw in ("执行流", "flow", "控制流")):
+        recommendations.append({
+            "tool": "analyze_flow",
+            "reason": "用户想分析执行流",
+            "tier": "advanced",
+        })
+
+    if any(kw in goal for kw in ("平坦化", "flattened", "deflatten", "ollvm")):
+        recommendations.append({
+            "tool": "deflatten_flow",
+            "reason": "用户想反控制流平坦化",
+            "tier": "advanced",
+        })
+
+    if any(kw in goal for kw in ("决策点", "分支", "decision", "branch", "比较")):
+        recommendations.append({
+            "tool": "find_decision_points",
+            "reason": "用户想查找决策点",
+            "tier": "advanced",
+        })
+
+    if any(kw in goal for kw in ("角色", "validator", "checker", "role")):
+        recommendations.append({
+            "tool": "detect_roles",
+            "reason": "用户想检测函数角色",
+            "tier": "advanced",
+        })
+
+    if any(kw in goal for kw in ("hook", "frida", "拦截")):
+        recommendations.append({
+            "tool": "import_evidence",
+            "reason": "用户想导入 Frida hook 结果",
+            "tier": "basic",
+        })
+
+    if any(kw in goal for kw in ("求解", "angr", "solve", "符号执行")):
+        recommendations.append({
+            "tool": "import_evidence",
+            "reason": "用户想导入 angr 求解结果",
+            "tier": "basic",
+        })
+
+    if any(kw in goal for kw in ("签名", "加密", "crypto", "signature", "aes", "tea")):
+        recommendations.append({
+            "tool": "sig_match",
+            "reason": "用户想匹配加密签名",
+            "tier": "expert",
+        })
+
+    if any(kw in goal for kw in ("wasm", "webassembly")):
+        recommendations.append({
+            "tool": "wasm_analyze",
+            "reason": "用户想分析 WASM 模块",
+            "tier": "expert",
+        })
+
+    if any(kw in goal for kw in ("环境", "依赖", "doctor", "安装")):
+        recommendations.append({
+            "tool": "doctor",
+            "reason": "用户想检查环境依赖",
+            "tier": "basic",
+        })
+
+    # 如果没有匹配，推荐默认流程
+    if not recommendations:
+        recommendations = [
+            {"tool": "triage_target", "reason": "没有明确目标时，建议先运行一键 triage", "tier": "basic"},
+            {"tool": "summarize_case", "reason": "如果已有 case，先查看当前进度", "tier": "basic"},
+            {"tool": "doctor", "reason": "如果环境有问题，先检查依赖", "tier": "basic"},
+        ]
+
+    return json.dumps({
+        "recommendations": recommendations,
+        "total_tools": len(TOOLS),
+        "tier_summary": {
+            "basic": len([t for t in TOOL_TIERS.values() if t["tier"] == "basic"]),
+            "advanced": len([t for t in TOOL_TIERS.values() if t["tier"] == "advanced"]),
+            "expert": len([t for t in TOOL_TIERS.values() if t["tier"] == "expert"]),
+        },
+    }, indent=2, ensure_ascii=False)
+
+
 async def _stdio_loop() -> None:
     while True:
         line = await asyncio.to_thread(sys.stdin.readline)
@@ -1846,12 +2326,20 @@ async def _stdio_loop() -> None:
             elif method == "notifications/initialized":
                 continue
             elif method == "tools/list":
-                response["result"] = {
-                    "tools": [
-                        {"name": name, **definition}
-                        for name, definition in TOOLS.items()
-                    ]
-                }
+                tools_list = []
+                for tname, tdef in TOOLS.items():
+                    entry = {"name": tname, **tdef}
+                    tier_info = TOOL_TIERS.get(tname)
+                    if tier_info:
+                        entry["tier"] = tier_info["tier"]
+                        entry["when_to_use"] = tier_info["when_to_use"]
+                    else:
+                        entry["tier"] = "advanced"
+                    tools_list.append(entry)
+                # 按 tier 排序：basic → advanced → expert
+                tier_order = {"basic": 0, "advanced": 1, "expert": 2}
+                tools_list.sort(key=lambda t: tier_order.get(t.get("tier", "advanced"), 1))
+                response["result"] = {"tools": tools_list}
             elif method == "tools/call":
                 response["result"] = _call_tool(params["name"], params.get("arguments") or {})
             elif method == "resources/list":

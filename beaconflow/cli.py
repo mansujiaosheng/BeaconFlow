@@ -29,8 +29,8 @@ from beaconflow.fuzz_corpus import corpus_init, corpus_minimize, corpus_from_rep
 from beaconflow.dynamorio_custom import generate_client_template, run_custom_client, import_custom_trace
 from beaconflow.templates import suggest_hook, suggest_angr, suggest_debug, generate_template, list_templates
 from beaconflow.importers import import_frida_log, import_gdb_log, import_angr_result, import_jadx_summary
-from beaconflow.triage import triage_native, triage_qemu, triage_wasm, triage_pyc
-from beaconflow.benchmark import run_benchmark, run_all_benchmarks, list_benchmarks
+from beaconflow.triage import triage as triage_auto, triage_native, triage_qemu, triage_wasm, triage_pyc
+from beaconflow.benchmark import run_benchmark, run_all_benchmarks, run_builtin_benchmarks, list_benchmarks
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -1532,6 +1532,21 @@ def _cmd_import_jadx(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_triage(args: argparse.Namespace) -> int:
+    result = triage_auto(
+        target_path=args.target,
+        output_dir=args.output_dir,
+        stdin=args.stdin,
+        target_args=args.target_args,
+        qemu_arch=args.qemu_arch,
+        arch=args.arch,
+        timeout=args.timeout,
+        disassemble=args.disassemble,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+    return 0 if result.get("status") == "ok" else 1
+
+
 def _cmd_triage_native(args: argparse.Namespace) -> int:
     result = triage_native(
         target_path=args.target,
@@ -1581,6 +1596,10 @@ def _cmd_benchmark(args: argparse.Namespace) -> int:
         result = list_benchmarks()
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
+    if args.builtin:
+        result = run_builtin_benchmarks(output_dir=args.output_dir)
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        return 0 if result.get("failed", 0) == 0 else 1
     if args.run:
         result = run_benchmark(args.run, target_path=args.target, output_dir=args.output_dir)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
@@ -1592,7 +1611,7 @@ def _cmd_benchmark(args: argparse.Namespace) -> int:
         result = run_all_benchmarks(targets=targets, output_dir=args.output_dir)
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return 0 if result.get("total_failed", 0) == 0 else 1
-    print("Use --list, --run, or --run-all", file=sys.stderr)
+    print("Use --list, --run, --run-all, or --builtin", file=sys.stderr)
     return 1
 
 
@@ -2226,6 +2245,17 @@ def build_parser() -> argparse.ArgumentParser:
     import_jadx_p.add_argument("--metadata", help="IDA/Ghidra metadata JSON for correlation.")
     import_jadx_p.set_defaults(func=_cmd_import_jadx)
 
+    triage_p = sub.add_parser("triage", help="Auto-detect target type and run the appropriate triage workflow.")
+    triage_p.add_argument("--target", required=True, help="Target binary file (PE/ELF/WASM/.pyc).")
+    triage_p.add_argument("--output-dir", required=True, help="Output directory for all reports.")
+    triage_p.add_argument("--stdin", help="Stdin input for target.")
+    triage_p.add_argument("--target-args", nargs="*", help="Arguments to pass to target.")
+    triage_p.add_argument("--qemu-arch", help="Override QEMU arch (loongarch64/mips/arm/aarch64/riscv).")
+    triage_p.add_argument("--arch", help="Override target arch (x86/x64).")
+    triage_p.add_argument("--timeout", type=int, default=120, help="Per-step timeout in seconds.")
+    triage_p.add_argument("--disassemble", action="store_true", help="Include disassembly (for .pyc targets).")
+    triage_p.set_defaults(func=_cmd_triage)
+
     triage_native_p = sub.add_parser("triage-native", help="One-command native PE/ELF triage workflow.")
     triage_native_p.add_argument("--target", required=True, help="Target PE/ELF binary.")
     triage_native_p.add_argument("--output-dir", required=True, help="Output directory for all reports.")
@@ -2256,6 +2286,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     benchmark_p = sub.add_parser("benchmark", help="Run benchmark cases to validate BeaconFlow features.")
     benchmark_p.add_argument("--list", action="store_true", help="List available benchmark cases.")
+    benchmark_p.add_argument("--builtin", action="store_true", help="Run built-in benchmarks (no external target needed).")
     benchmark_p.add_argument("--run", help="Run a specific benchmark case by name.")
     benchmark_p.add_argument("--run-all", action="store_true", help="Run all benchmark cases.")
     benchmark_p.add_argument("--target", help="Target binary path for the benchmark.")
