@@ -16,14 +16,14 @@ from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
 from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws_add_note, add_report as ws_add_report, add_run as ws_add_run, case_to_markdown, destroy_case, init_case, list_notes, list_reports, list_runs, load_manifest, summarize_case
-from beaconflow.wasm_parser import wasm_to_metadata
+from beaconflow.wasm_parser import analyze_wasm, wasm_to_metadata
 from beaconflow.runtime.trace_calls import trace_calls, trace_calls_to_markdown
 from beaconflow.runtime.trace_compare import trace_compare, trace_compare_to_markdown
 from beaconflow.analysis.auto_explore import auto_explore_loop, auto_explore_to_markdown
 from beaconflow.analysis.input_impact import input_impact, input_impact_to_markdown
 from beaconflow.analysis.decision_points import find_decision_points
 from beaconflow.analysis.role_detector import analyze_roles
-from beaconflow.update_checker import check_and_notify_async, check_for_update, update_check_to_markdown
+from beaconflow.update_checker import check_for_update, update_check_to_markdown
 
 
 TOOLS: dict[str, dict[str, Any]] = {
@@ -181,6 +181,8 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "address_max": {"type": "string"},
                 "gap": {"type": "string", "default": "0x100"},
                 "name_prefix": {"type": "string", "default": "qemu_trace"},
+                "allow_unbounded_address_logs": {"type": "boolean", "default": False, "description": "Allow post-processing large QEMU logs without address_min/address_max. By default BeaconFlow returns a warning instead of spending minutes clustering runtime/library addresses."},
+                "max_unbounded_log_bytes": {"type": "integer", "default": 8000000, "description": "Soft limit for total QEMU log bytes when no address range is supplied."},
                 "success_regex": {"type": "string", "description": "Classify runs as success when stdout/stderr matches."},
                 "failure_regex": {"type": "string", "description": "Classify runs as failure when stdout/stderr matches."},
                 "focus_function": {"type": "string"},
@@ -603,6 +605,20 @@ TOOLS: dict[str, dict[str, Any]] = {
             "required": ["wasm_path", "output_path"],
         },
     },
+    "wasm_analyze": {
+        "description": "Analyze a WebAssembly module for RE triage: imports, exports, strings, data segments, and function summaries.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "wasm_path": {"type": "string", "description": "Path to WASM binary file."},
+                "output_path": {"type": "string", "description": "Optional output report path."},
+                "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
+                "min_string": {"type": "integer", "default": 4, "description": "Minimum ASCII string length to report."},
+                "max_functions": {"type": "integer", "default": 0, "description": "Limit function summaries; 0 means all."},
+            },
+            "required": ["wasm_path"],
+        },
+    },
     "trace_calls": {
         "description": "Trace library function calls (strcmp/memcmp/strncmp/strlen/etc.) at runtime using Frida. Captures actual parameter values, return values, and call sites. Most useful for seeing what values are being compared in CTF challenges. Default filter_user_only=true filters out CRT/runtime library internal calls to reduce noise.",
         "inputSchema": {
@@ -771,6 +787,43 @@ def _mcp_qemu_explore(arguments: dict[str, Any]) -> dict[str, Any]:
             runs[item.pop("index")] = item
 
     log_paths = [str(item["qemu"].log_path) for item in runs]
+    has_address_range = bool(arguments.get("address_min") or arguments.get("address_max"))
+    total_log_bytes = sum(Path(path).stat().st_size for path in log_paths if Path(path).exists())
+    max_unbounded = int(arguments.get("max_unbounded_log_bytes") or 8_000_000)
+    if not has_address_range and not arguments.get("allow_unbounded_address_logs", False) and total_log_bytes > max_unbounded:
+        report_runs = [
+            {
+                "name": item["name"],
+                "stdin_preview": _preview(item["stdin"]),
+                "log_path": str(item["qemu"].log_path),
+                "returncode": item["qemu"].returncode,
+                "stdout": item["qemu"].stdout,
+                "stderr": item["qemu"].stderr,
+                "verdict": _classify_run(item["qemu"].stdout, item["qemu"].stderr, item["qemu"].returncode, arguments),
+                "output_fingerprint": _output_fingerprint(item["qemu"].stdout, item["qemu"].stderr),
+            }
+            for item in runs
+        ]
+        return {
+            "status": "needs_address_range",
+            "summary": {
+                "target": target,
+                "qemu_arch": qemu_arch,
+                "trace_mode": arguments.get("trace_mode") or "in_asm",
+                "runs": len(report_runs),
+                "total_log_bytes": total_log_bytes,
+                "max_unbounded_log_bytes": max_unbounded,
+            },
+            "runs": report_runs,
+            "warnings": [
+                "QEMU logs were collected, but BeaconFlow skipped unbounded post-processing because no address_min/address_max was supplied and the logs exceed the soft limit.",
+                "Re-run qemu_explore with address_min/address_max for the target code range, or set allow_unbounded_address_logs=true if full-log clustering is intentional.",
+            ],
+            "recommended_arguments": {
+                "address_min": "0x<target_text_start>",
+                "address_max": "0x<target_text_end>",
+            },
+        }
 
     merged = load_address_log(
         log_paths[0],
@@ -841,11 +894,64 @@ def _mcp_qemu_explore(arguments: dict[str, Any]) -> dict[str, Any]:
             "qemu_available": qemu_available(qemu_arch),
             "metadata_path": str(metadata_path),
             "runs": len(report_runs),
+            "total_log_bytes": total_log_bytes,
             "total_union_functions": len(metadata.functions),
             "total_union_blocks": sum(len(f.blocks) for f in metadata.functions),
         },
         "runs": report_runs,
     })
+
+
+def _qemu_explore_to_markdown(report: dict[str, Any]) -> str:
+    summary = report.get("summary", {})
+    lines = [
+        "# BeaconFlow QEMU Explore",
+        "",
+        f"- Status: `{report.get('status', 'ok')}`",
+        f"- Target: `{summary.get('target', '')}`",
+        f"- QEMU arch: `{summary.get('qemu_arch', '')}`",
+        f"- Trace mode: `{summary.get('trace_mode', '')}`",
+        f"- Runs: {summary.get('runs', 0)}",
+    ]
+    if summary.get("total_log_bytes") is not None:
+        lines.append(f"- Total log bytes: {summary.get('total_log_bytes')}")
+    if summary.get("metadata_path"):
+        lines.append(f"- Metadata: `{summary.get('metadata_path')}`")
+    lines.append("")
+
+    warnings = report.get("warnings") or []
+    if warnings:
+        lines.extend(["## Warnings", ""])
+        lines.extend(f"- {warning}" for warning in warnings)
+        lines.append("")
+
+    digest = report.get("ai_digest") or {}
+    if digest.get("top_findings"):
+        lines.extend(["## AI Digest", ""])
+        for finding in digest.get("top_findings", [])[:5]:
+            lines.append(f"- {finding.get('evidence_id')}: {finding.get('claim')}")
+        lines.append("")
+
+    runs = report.get("runs") or []
+    if runs:
+        lines.extend(["## Runs", ""])
+        lines.append("| Name | Verdict | New vs baseline | Unique blocks | Output | Log |")
+        lines.append("| --- | --- | ---: | ---: | --- | --- |")
+        for run in runs:
+            lines.append(
+                f"| `{run.get('name', '')}` | `{run.get('verdict', '')}` | "
+                f"{run.get('new_blocks_vs_baseline', '')} | {run.get('unique_blocks', '')} | "
+                f"`{run.get('output_fingerprint', '')}` | `{run.get('log_path', '')}` |"
+            )
+        lines.append("")
+
+    rec = report.get("recommended_arguments") or {}
+    if rec:
+        lines.extend(["## Recommended Arguments", ""])
+        for key, value in rec.items():
+            lines.append(f"- `{key}`: `{value}`")
+        lines.append("")
+    return "\n".join(lines)
 
 
 def _load_flow_source(arguments: dict[str, Any], coverage_key: str, address_log_key: str):
@@ -990,7 +1096,10 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return _tool_result(result.to_json())
 
     if name == "qemu_explore":
-        return _tool_result(_mcp_qemu_explore(arguments))
+        result = _mcp_qemu_explore(arguments)
+        if arguments.get("format") == "markdown":
+            return _tool_result(_qemu_explore_to_markdown(result))
+        return _tool_result(result)
 
     if name == "export_ghidra_metadata":
         result = export_ghidra_metadata(
@@ -1440,6 +1549,16 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         )
         return _tool_result(result)
 
+    if name == "wasm_analyze":
+        result = analyze_wasm(
+            wasm_path=arguments["wasm_path"],
+            output_path=arguments.get("output_path"),
+            fmt=arguments.get("format") or "markdown",
+            min_string=arguments.get("min_string") or 4,
+            max_functions=arguments.get("max_functions") or 0,
+        )
+        return _tool_result(result)
+
     if name == "trace_calls":
         result = trace_calls(
             target=arguments["target"],
@@ -1670,6 +1789,8 @@ async def _stdio_loop() -> None:
         line = await asyncio.to_thread(sys.stdin.readline)
         if not line:
             return
+        if not line.strip():
+            continue
         request = json.loads(line)
         response: dict[str, Any] = {"jsonrpc": "2.0", "id": request.get("id")}
         try:
@@ -1723,7 +1844,6 @@ async def _stdio_loop() -> None:
 
 
 def main() -> int:
-    check_and_notify_async()
     asyncio.run(_stdio_loop())
     return 0
 

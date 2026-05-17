@@ -4,6 +4,19 @@ Use this skill when analyzing binary execution coverage, control flow, or path d
 
 Repository: https://github.com/mansujiaosheng/BeaconFlow
 
+## Local Setup
+
+On this machine the local checkout is `D:\project\BeaconFlow`.
+
+```powershell
+cd D:\project\BeaconFlow
+python -m pip install -e ".[mcp]"
+python -m beaconflow.cli doctor --format markdown
+python -m beaconflow.cli --help
+```
+
+Use `python -m beaconflow.mcp.server` or `beaconflow-mcp` for the stdio MCP server.
+
 ## Two Workflows
 
 ### Workflow A: IDA/Ghidra + DynamoRIO (x86/x64 targets)
@@ -81,6 +94,8 @@ Use when IDA cannot open the target (unsupported architecture) or no DynamoRIO i
    ```
 
    `qemu_explore` runs all inputs in parallel, classifies verdicts, and ranks path novelty. The input with the highest `new_blocks_vs_baseline` triggered the most new code paths and should be analyzed first.
+
+   For large static ELF targets, always narrow the target code range with `address_min` / `address_max` before trusting runtime. A full LoongArch static binary trace can spend minutes clustering loader/libc addresses; the ACTF flagchecker test completed quickly when limited to `0x220000`-`0x244000`.
 
 3. Generate fallback metadata with `metadata_from_address_log`, then use `analyze_flow` and `diff_flow` the same way as Workflow A.
 
@@ -172,8 +187,20 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `list_case_reports` | List all reports in the case workspace. |
 | `list_case_notes` | List all notes in the case workspace. |
 | `export_wasm_metadata` | Export metadata from a WebAssembly (.wasm) binary using pure Python parser. No external dependencies required. |
+| `wasm_analyze` | Generate a WASM triage report with imports, exports, strings, data segments, and function summaries. |
 | `trace_calls` | Trace library function calls (strcmp/memcmp/strncmp/strlen/etc.) at runtime using Frida. Captures actual parameter values, return values, and call sites. Most useful for seeing what values are being compared in CTF challenges. |
 | `trace_compare_rt` | Trace compare instructions at runtime using Frida. Extracts register values at cmp/test/jcc decision points. Currently supports x86/x64 only. |
+
+## MCP Notes
+
+- The MCP server is stdio JSON-RPC: `python -m beaconflow.mcp.server` or `beaconflow-mcp`.
+- MCP startup does not print update notifications; call `check_update` explicitly when version information is needed.
+- `tools/list` currently exposes 45 tools. A full local matrix was verified on 2026-05-17 with:
+  - `tests\fixtures\simple_pe.exe` for Ghidra metadata, drcov, flow/diff, deflatten, branch ranking, decision points, Frida runtime tracing, and input-impact.
+  - `D:\CTF\ACTF2026\flagchecker\flagchecker` for LoongArch QEMU collection/exploration, address-log flow/diff, and case workspace tools.
+  - `D:\CTF\ISCC2026\qu\re3-lei\box.wasm` for WASM metadata, WASM triage, normalized IR, signature matching, roles, and pseudo-code.
+- MCP static compare analysis is named `analyze_compare`; runtime Frida compare tracing is named `trace_compare`.
+- MCP `branch_rank` expects a baseline `bad_coverage_path` or `bad_address_log_path`, plus optional `better_*` / `good_*` traces. Do not pass generic `coverage_paths` to this tool.
 
 ## Key Parameters
 
