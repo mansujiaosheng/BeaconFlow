@@ -1,35 +1,62 @@
-"""验证 triage-native 缺依赖时输出 partial report"""
+"""Verify triage detection and partial report behavior."""
 import json
 import sys
-sys.path.insert(0, r"D:\project\BeaconFlow")
-
-from beaconflow.triage import _detect_target_type, triage
+import tempfile
+import unittest
 from pathlib import Path
 
-# 测试1: 文件类型检测
-print("=== Test 1: 文件类型检测 ===")
-test_file = Path(r"D:\CTF\ISCC2026\guo\re-手忙脚乱\attachment-62.exe")
-if test_file.exists():
-    info = _detect_target_type(test_file)
-    print(f"Type: {info.get('type')}, Arch: {info.get('arch')}")
-    assert info.get("type") == "pe", f"Expected pe, got {info.get('type')}"
-    print("PASS: PE detection works")
-else:
-    print("SKIP: test file not found")
+from beaconflow.triage import _detect_target_type, triage
 
-# 测试2: 不存在的文件
-print("\n=== Test 2: 不存在的文件 ===")
-info = _detect_target_type(Path("nonexistent.exe"))
-assert info.get("type") == "unknown"
-assert "error" in info
-print("PASS: nonexistent file returns unknown with error")
 
-# 测试3: WASM 文件检测
-wasm_file = Path(r"D:\project\test4\wasm_triage3\wasm_analyze.json")
-if wasm_file.exists():
-    info = _detect_target_type(wasm_file)
-    print(f"JSON file type: {info.get('type')} (should NOT be pyc)")
-    assert info.get("type") != "pyc", "JSON files should not be detected as pyc"
-    print("PASS: JSON not misdetected as pyc")
+class TestDetectTargetType(unittest.TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
 
-print("\nAll detection tests passed!")
+    def _write(self, name: str, data: bytes) -> Path:
+        p = Path(self.tmpdir) / name
+        p.write_bytes(data)
+        return p
+
+    def test_nonexistent_file_returns_unknown(self):
+        info = _detect_target_type(Path("nonexistent_file_12345.exe"))
+        self.assertEqual(info.get("type"), "unknown")
+        self.assertIn("error", info)
+
+    def test_pe_detection(self):
+        p = self._write("test.exe", b"MZ" + b"\x00" * 126)
+        info = _detect_target_type(p)
+        self.assertEqual(info.get("type"), "pe")
+
+    def test_elf_detection(self):
+        p = self._write("test.elf", b"\x7fELF" + b"\x00" * 60)
+        info = _detect_target_type(p)
+        self.assertEqual(info.get("type"), "elf")
+
+    def test_wasm_detection(self):
+        p = self._write("test.wasm", b"\x00asm" + b"\x01\x00\x00\x00")
+        info = _detect_target_type(p)
+        self.assertEqual(info.get("type"), "wasm")
+
+    def test_json_not_misdetected_as_pyc(self):
+        p = self._write("test.json", b'{"key": "value"}')
+        info = _detect_target_type(p)
+        self.assertNotEqual(info.get("type"), "pyc")
+
+    def test_apk_detection(self):
+        p = self._write("test.apk", b"PK" + b"\x00" * 100)
+        info = _detect_target_type(p)
+        self.assertEqual(info.get("type"), "apk")
+
+
+class TestTriagePartialReport(unittest.TestCase):
+    def test_triage_nonexistent_returns_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            result = triage(
+                target_path=Path(tmpdir) / "nonexistent_12345.exe",
+                output_dir=tmpdir,
+            )
+            self.assertIn(result.get("status"), ("error", "partial"))
+
+
+if __name__ == "__main__":
+    unittest.main()
