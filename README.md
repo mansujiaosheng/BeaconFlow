@@ -127,6 +127,50 @@ BeaconFlow 支持两种核心工作流，取决于目标架构和可用工具：
 
 此外，Ghidra + pyghidra 可以作为 metadata 导出的替代方案（工作流 A/B 的增强），支持 IDA 不支持的架构。
 
+## 一键工作流（Quickstart）
+
+如果你只是想先得到可读报告，不想在几十个命令里选择入口，优先使用 quickstart 命令。
+
+### PE / Windows 可执行文件
+
+```powershell
+python -m beaconflow.cli quickstart-pe `
+  --target D:\case\target.exe `
+  --output-dir D:\case\beacon_quick `
+  -- arg1 arg2
+```
+
+输出目录会包含 Ghidra metadata、drcov run、coverage JSON/Markdown、flow JSON/Markdown 和 `quickstart-pe.md` 索引。
+
+### QEMU / 非 x86 ELF
+
+```powershell
+python -m beaconflow.cli quickstart-qemu `
+  --target D:\case\flagchecker `
+  --qemu-arch loongarch64 `
+  --output-dir D:\case\beacon_qemu `
+  --stdin "ACTF{test}" `
+  --stdin "ACTF{00000000000000000000000000000000}" `
+  --auto-newline `
+  --failure-regex "Wrong" `
+  --address-min 0x220000 --address-max 0x244000 `
+  --format markdown
+```
+
+输出目录会包含 QEMU logs、fallback metadata、path novelty 报告和 `quickstart-qemu.md` 索引。
+
+### 控制流平坦化
+
+```powershell
+python -m beaconflow.cli quickstart-flatten `
+  --metadata D:\case\metadata.json `
+  --address-log D:\case\wrong.in_asm.qemu.log `
+  --address-min 0x220000 --address-max 0x244000 `
+  --output-dir D:\case\beacon_flatten
+```
+
+输出目录会包含 deflatten JSON/Markdown 和 `quickstart-flatten.md` 索引。
+
 ***
 
 ## 工作流 A：IDA + DynamoRIO

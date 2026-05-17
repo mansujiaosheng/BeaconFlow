@@ -17,6 +17,18 @@ python -m beaconflow.cli --help
 
 Use `python -m beaconflow.mcp.server` or `beaconflow-mcp` for the stdio MCP server.
 
+## Quickstart Bias
+
+When the user wants a first-pass result rather than a custom pipeline, prefer:
+
+```powershell
+python -m beaconflow.cli quickstart-pe --target target.exe --output-dir beacon_quick -- arg1
+python -m beaconflow.cli quickstart-qemu --target flagchecker --qemu-arch loongarch64 --output-dir beacon_qemu --stdin "test" --auto-newline --address-min 0x220000 --address-max 0x244000 --format markdown
+python -m beaconflow.cli quickstart-flatten --metadata metadata.json --address-log run.in_asm.qemu.log --output-dir beacon_flatten --address-min 0x220000 --address-max 0x244000
+```
+
+Each quickstart writes a `quickstart-*.md` index plus JSON/Markdown artifacts in its output directory.
+
 ## Two Workflows
 
 ### Workflow A: IDA/Ghidra + DynamoRIO (x86/x64 targets)

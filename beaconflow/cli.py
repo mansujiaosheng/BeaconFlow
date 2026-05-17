@@ -1152,6 +1152,168 @@ def _cmd_export_ghidra(args: argparse.Namespace) -> int:
     return 0
 
 
+def _clean_target_args(values: list[str] | None) -> list[str]:
+    if not values:
+        return []
+    return values[1:] if values and values[0] == "--" else values
+
+
+def _write_json(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def _write_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(value, encoding="utf-8")
+
+
+def _quickstart_index(title: str, artifacts: dict[str, Path], notes: list[str] | None = None) -> str:
+    lines = [f"# {title}", ""]
+    if notes:
+        lines.extend(["## Notes", ""])
+        lines.extend(f"- {note}" for note in notes)
+        lines.append("")
+    lines.extend(["## Artifacts", "", "| Name | Path |", "| --- | --- |"])
+    for name, path in artifacts.items():
+        lines.append(f"| {name} | `{path}` |")
+    return "\n".join(lines) + "\n"
+
+
+def _cmd_quickstart_pe(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target = Path(args.target)
+    stem = target.stem
+    metadata_path = output_dir / f"{stem}.metadata.json"
+    runs_dir = output_dir / "runs"
+
+    export_result = export_ghidra_metadata(
+        target=args.target,
+        output=metadata_path,
+        timeout=args.ghidra_timeout,
+        backend=args.backend,
+        with_context=not args.no_context,
+    )
+    _write_json(output_dir / "ghidra_export.json", export_result)
+
+    run_result = collect_drcov(
+        target=args.target,
+        target_args=_clean_target_args(args.target_args),
+        output_dir=runs_dir,
+        arch=args.arch,
+        drrun_path=args.drrun,
+        stdin_text=_read_stdin_arg(args),
+        run_cwd=args.run_cwd,
+        timeout=args.timeout,
+        name=args.name,
+    )
+    _write_json(output_dir / "run.json", run_result.to_json())
+
+    metadata = load_metadata(metadata_path)
+    coverage = load_drcov(run_result.log_path)
+    coverage_report = analyze_coverage(metadata, coverage)
+    flow_report = analyze_flow(metadata, coverage, max_events=args.max_events, focus_function=args.focus_function)
+    flow_report["coverage_path"] = str(run_result.log_path)
+
+    coverage_json = output_dir / "coverage.json"
+    coverage_md = output_dir / "coverage.md"
+    flow_json = output_dir / "flow.json"
+    flow_md = output_dir / "flow.md"
+    summary_md = output_dir / "quickstart-pe.md"
+    _write_json(coverage_json, coverage_report)
+    _write_text(coverage_md, coverage_to_markdown(coverage_report, brief=args.brief))
+    _write_json(flow_json, flow_report)
+    _write_text(flow_md, flow_to_markdown(flow_report, brief=args.brief))
+    _write_text(
+        summary_md,
+        _quickstart_index(
+            "BeaconFlow Quickstart PE",
+            {
+                "metadata": metadata_path,
+                "run": output_dir / "run.json",
+                "coverage_json": coverage_json,
+                "coverage_md": coverage_md,
+                "flow_json": flow_json,
+                "flow_md": flow_md,
+            },
+            notes=[
+                f"target={target}",
+                f"drcov={run_result.log_path}",
+                "Open flow.md first for the executed path and AI digest.",
+            ],
+        ),
+    )
+    print(str(summary_md))
+    return 0
+
+
+def _cmd_quickstart_qemu(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    args.output = str(output_dir / ("qemu_explore.md" if args.format.startswith("markdown") else "qemu_explore.json"))
+    args.target_args = _clean_target_args(args.target_args)
+    code = _cmd_qemu_explore(args)
+    summary_md = output_dir / "quickstart-qemu.md"
+    _write_text(
+        summary_md,
+        _quickstart_index(
+            "BeaconFlow Quickstart QEMU",
+            {
+                "qemu_explore": Path(args.output),
+                "metadata": output_dir / "qemu_explore_metadata.json",
+            },
+            notes=[
+                f"target={args.target}",
+                f"qemu_arch={args.qemu_arch}",
+                "For large static ELF targets, pass --address-min/--address-max or use the auto-range command once available.",
+            ],
+        ),
+    )
+    print(str(summary_md))
+    return code
+
+
+def _cmd_quickstart_flatten(args: argparse.Namespace) -> int:
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    metadata = load_metadata(args.metadata)
+    coverage = _load_flow_input(args)
+    address_start, address_end = _resolve_address_range(args, metadata)
+    result = deflatten_flow(
+        metadata,
+        coverage,
+        focus_function=args.focus_function,
+        address_start=address_start,
+        address_end=address_end,
+        dispatcher_min_hits=args.dispatcher_min_hits,
+        dispatcher_min_pred=args.dispatcher_min_pred,
+        dispatcher_min_succ=args.dispatcher_min_succ,
+        dispatcher_mode=args.dispatcher_mode,
+    )
+    report_json = output_dir / "deflatten.json"
+    report_md = output_dir / "deflatten.md"
+    summary_md = output_dir / "quickstart-flatten.md"
+    _write_json(report_json, result)
+    _write_text(report_md, deflatten_to_markdown(result, brief=args.brief))
+    _write_text(
+        summary_md,
+        _quickstart_index(
+            "BeaconFlow Quickstart Flatten",
+            {
+                "deflatten_json": report_json,
+                "deflatten_md": report_md,
+            },
+            notes=[
+                f"metadata={args.metadata}",
+                "Read dispatcher_candidates before trusting dispatcher_blocks.",
+            ],
+        ),
+    )
+    print(str(summary_md))
+    return 0
+
+
 def _cmd_qemu_explore(args: argparse.Namespace) -> int:
     inputs = _explore_inputs(args)
     output_dir = Path(args.output_dir)
@@ -1428,7 +1590,7 @@ def _preview(value: str | None, limit: int = 80) -> str:
     return text if len(text) <= limit else text[:limit] + "..."
 
 
-def _qemu_explore_to_markdown(report: dict[str, object]) -> str:
+def _qemu_explore_to_markdown(report: dict[str, object], brief: bool = False) -> str:
     summary = report["summary"]
     lines = [
         "# BeaconFlow QEMU Explore",
@@ -1463,7 +1625,8 @@ def _qemu_explore_to_markdown(report: dict[str, object]) -> str:
         "| Case | Verdict | Return | Unique Blocks | New vs Baseline | New Global | Output | Stdin |",
         "| --- | --- | ---: | ---: | ---: | ---: | --- | --- |",
     ])
-    for run in report["runs"]:
+    runs = report["runs"][:10] if brief else report["runs"]
+    for run in runs:
         lines.append(
             f"| `{run['name']}` | `{run['verdict']}` | {run['returncode']} | "
             f"{run['unique_blocks']} | {run['new_blocks_vs_baseline']} | {run['new_blocks_global']} | "
@@ -1507,6 +1670,76 @@ def _read_stdin_arg(args: argparse.Namespace) -> str | None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="beaconflow")
     sub = parser.add_subparsers(dest="command", required=True)
+
+    quick_pe = sub.add_parser("quickstart-pe", help="One-command PE workflow: Ghidra metadata, drcov collection, coverage, and flow reports.")
+    quick_pe.add_argument("--target", required=True, help="PE executable to analyze.")
+    quick_pe.add_argument("--output-dir", required=True, help="Directory for generated metadata, runs, and reports.")
+    quick_pe.add_argument("--arch", choices=("x86", "x64"), default="x64")
+    quick_pe.add_argument("--backend", choices=("pyghidra", "headless"), default="pyghidra", help="Ghidra export backend.")
+    quick_pe.add_argument("--ghidra-timeout", type=int, default=600)
+    quick_pe.add_argument("--no-context", action="store_true", help="Skip Ghidra block context extraction.")
+    quick_pe.add_argument("--drrun", help="Optional custom drrun path.")
+    quick_pe.add_argument("--stdin", help="Text to send to target stdin.")
+    quick_pe.add_argument("--stdin-file", help="File contents to send to target stdin.")
+    quick_pe.add_argument("--auto-newline", action="store_true", help="Append a newline to --stdin/--stdin-file if missing.")
+    quick_pe.add_argument("--run-cwd", help="Working directory for the target process.")
+    quick_pe.add_argument("--timeout", type=int, default=120)
+    quick_pe.add_argument("--name", help="Custom name for the drcov log file.")
+    quick_pe.add_argument("--max-events", type=int, default=0)
+    quick_pe.add_argument("--focus-function")
+    quick_pe.add_argument("--brief", action="store_true", help="Write brief Markdown reports.")
+    quick_pe.add_argument("target_args", nargs=argparse.REMAINDER)
+    quick_pe.set_defaults(func=_cmd_quickstart_pe)
+
+    quick_qemu = sub.add_parser("quickstart-qemu", help="One-command QEMU workflow: collect/explore inputs and emit path novelty reports.")
+    quick_qemu.add_argument("--target", required=True)
+    quick_qemu.add_argument("--output-dir", required=True)
+    quick_qemu.add_argument("--qemu-arch", required=True)
+    quick_qemu.add_argument("--qemu", help="Optional custom qemu user-mode executable.")
+    quick_qemu.add_argument("--trace-mode", default="in_asm")
+    quick_qemu.add_argument("--stdin", action="append", help="One stdin test case. Can be repeated.")
+    quick_qemu.add_argument("--stdin-file", action="append", help="One stdin file test case. Can be repeated.")
+    quick_qemu.add_argument("--mutate-template", "--mutate-format", dest="mutate_format", action="append")
+    quick_qemu.add_argument("--mutate-seed")
+    quick_qemu.add_argument("--mutate-alphabet", default="0123456789abcdef")
+    quick_qemu.add_argument("--mutate-positions")
+    quick_qemu.add_argument("--mutate-limit", type=int, default=128)
+    quick_qemu.add_argument("--strategy", choices=("byte-flip", "length", "all"), default="byte-flip")
+    quick_qemu.add_argument("--keep-top", type=int, default=20)
+    quick_qemu.add_argument("--auto-newline", action="store_true")
+    quick_qemu.add_argument("--jobs", type=int, default=0)
+    quick_qemu.add_argument("--run-cwd")
+    quick_qemu.add_argument("--timeout", type=int, default=120)
+    quick_qemu.add_argument("--block-size", type=int, default=4)
+    quick_qemu.add_argument("--address-min")
+    quick_qemu.add_argument("--address-max")
+    quick_qemu.add_argument("--gap", default="0x100")
+    quick_qemu.add_argument("--name-prefix", default="qemu_trace")
+    quick_qemu.add_argument("--focus-function")
+    quick_qemu.add_argument("--success-regex")
+    quick_qemu.add_argument("--failure-regex")
+    quick_qemu.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="markdown")
+    quick_qemu.add_argument("target_args", nargs=argparse.REMAINDER)
+    quick_qemu.set_defaults(func=_cmd_quickstart_qemu)
+
+    quick_flatten = sub.add_parser("quickstart-flatten", help="One-command deflatten workflow for an existing drcov or QEMU address log.")
+    quick_flatten.add_argument("--metadata", required=True)
+    quick_flatten_source = quick_flatten.add_mutually_exclusive_group(required=True)
+    quick_flatten_source.add_argument("--coverage", help="DynamoRIO drcov coverage file.")
+    quick_flatten_source.add_argument("--address-log", help="QEMU address log file.")
+    quick_flatten.add_argument("--output-dir", required=True)
+    quick_flatten.add_argument("--block-size", type=int, default=4)
+    quick_flatten.add_argument("--address-min")
+    quick_flatten.add_argument("--address-max")
+    quick_flatten.add_argument("--from", dest="range_from")
+    quick_flatten.add_argument("--to", dest="range_to")
+    quick_flatten.add_argument("--focus-function")
+    quick_flatten.add_argument("--dispatcher-min-hits", type=int, default=2)
+    quick_flatten.add_argument("--dispatcher-min-pred", type=int, default=2)
+    quick_flatten.add_argument("--dispatcher-min-succ", type=int, default=2)
+    quick_flatten.add_argument("--dispatcher-mode", choices=("strict", "balanced", "aggressive"), default="strict")
+    quick_flatten.add_argument("--brief", action="store_true")
+    quick_flatten.set_defaults(func=_cmd_quickstart_flatten)
 
     analyze = sub.add_parser("analyze", help="Analyze drcov coverage against exported IDA metadata.")
     analyze.add_argument("--metadata", required=True, help="IDA metadata JSON exported by ida_scripts/export_ida_metadata.py")

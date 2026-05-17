@@ -312,6 +312,9 @@ CLI 用短横线，MCP 用下划线：
 
 | CLI | MCP |
 | --- | --- |
+| `quickstart-pe` | CLI only |
+| `quickstart-qemu` | CLI only |
+| `quickstart-flatten` | CLI only |
 | `analyze` | `analyze_coverage` |
 | `diff` | `diff_coverage` |
 | `flow` | `analyze_flow` |
@@ -331,6 +334,8 @@ CLI 用短横线，MCP 用下划线：
 | `add-run` | `add_run_to_case` |
 | `add-report` | `add_report_to_case` |
 | `add-note` | `add_note_to_case` |
+
+Quickstart 命令是面向人和 Agent 的高层编排入口，会在输出目录生成多个底层报告；MCP 侧仍保持工具粒度，方便客户端按步骤组合。
 
 ## 7. 开发目录结构
 
