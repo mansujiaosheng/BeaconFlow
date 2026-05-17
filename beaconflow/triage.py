@@ -1,10 +1,11 @@
 """
-一键 Triage 工作流 - native / qemu / wasm。
+一键 Triage 工作流 - native / qemu / wasm / pyc。
 
 面向新人和 Agent 的快速入口：
 - triage-native：PE/ELF 本地分析（Ghidra metadata + drcov + coverage + flow + decision_points + roles）
 - triage-qemu：QEMU 远程分析（Ghidra/Ghidra metadata + QEMU trace + flow + branch_rank）
 - triage-wasm：WASM 分析（WASM metadata + decision_points + sig_match）
+- triage-pyc：Python .pyc 分析（magic 识别 + dis 反汇编 + code object 总结 + 可疑函数识别）
 """
 from __future__ import annotations
 
@@ -339,5 +340,316 @@ def triage_wasm(
             "用 inspect-function 深入可疑函数",
             "用 normalize-ir 查看架构无关 IR",
             "用 suggest-hook 生成 hook 模板",
+        ],
+    }
+
+
+# Python .pyc magic number 表（部分常用版本）
+_PYC_MAGIC: dict[int, str] = {
+    3413: "Python 3.8",
+    3423: "Python 3.8",
+    3424: "Python 3.8",
+    3425: "Python 3.8",
+    3430: "Python 3.9",
+    3431: "Python 3.9",
+    3425: "Python 3.9",
+    3435: "Python 3.10",
+    3438: "Python 3.10",
+    3439: "Python 3.10",
+    3495: "Python 3.11",
+    3531: "Python 3.11",
+    3532: "Python 3.11",
+    3550: "Python 3.12",
+    3561: "Python 3.12",
+    3571: "Python 3.13",
+    3580: "Python 3.13",
+    3590: "Python 3.14",
+}
+
+# 可疑函数名关键词
+_SUSPICIOUS_KEYWORDS = (
+    "check", "verify", "validate", "encrypt", "decrypt",
+    "hash", "encode", "decode", "compare", "flag",
+    "secret", "password", "key", "token", "license",
+    "auth", "login", "serial", "crack", "solve",
+)
+
+# 可疑常量关键词
+_SUSPICIOUS_CONST_KEYWORDS = (
+    "flag{", "flag", "ctf{", "iscc{", "actf{",
+    "correct", "wrong", "success", "fail", "error",
+    "password", "secret", "key", "token",
+    "base64", "aes", "des", "rsa", "md5", "sha",
+    "marshal", "zlib", "exec", "eval", "compile",
+)
+
+
+def _identify_pyc(target: Path) -> dict[str, Any]:
+    """识别 .pyc 文件基本信息：magic number、Python 版本、时间戳。"""
+    import struct
+
+    info: dict[str, Any] = {"path": str(target), "size": target.stat().st_size}
+
+    data = target.read_bytes()
+    if len(data) < 16:
+        info["error"] = "文件太小，不是有效的 .pyc"
+        return info
+
+    # 读取 magic number（前 4 字节，小端序）
+    magic = struct.unpack("<H", data[:2])[0]
+    info["magic_number"] = magic
+    info["magic_hex"] = f"0x{magic:04x}"
+
+    # 匹配 Python 版本
+    version = _PYC_MAGIC.get(magic)
+    if not version:
+        # 尝试匹配 magic/2 的范围
+        for m, v in sorted(_PYC_MAGIC.items()):
+            if abs(m - magic) <= 5:
+                version = f"{v} (近似匹配)"
+                break
+    info["python_version"] = version or "未知版本"
+
+    # 读取 flags（第 3-4 字节）
+    flags = struct.unpack("<H", data[2:4])[0]
+    info["flags"] = flags
+    info["is_hash_based"] = bool(flags & 0x01)
+    info["is_source_size_based"] = bool(flags & 0x02)
+
+    # 读取时间戳或 hash（第 5-8 字节）
+    if not info["is_hash_based"]:
+        timestamp = struct.unpack("<I", data[4:8])[0]
+        import time
+        info["timestamp"] = timestamp
+        if timestamp > 0:
+            info["timestamp_readable"] = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(timestamp))
+    else:
+        source_hash = data[4:20].hex()
+        info["source_hash"] = source_hash
+
+    return info
+
+
+def _analyze_code_object(code, prefix: str = "") -> list[dict[str, Any]]:
+    """递归分析 code object，提取函数名、常量、可疑标记。"""
+    results: list[dict[str, Any]] = []
+
+    entry: dict[str, Any] = {
+        "name": f"{prefix}{code.co_name}" if prefix else code.co_name,
+        "filename": code.co_filename,
+        "lineno": code.co_firstlineno,
+        "arg_count": code.co_argcount,
+        "local_vars": list(code.co_varnames[:code.co_argcount + code.co_nlocals]) if code.co_varnames else [],
+        "names": list(code.co_names) if code.co_names else [],
+        "constants_summary": [],
+        "is_suspicious": False,
+        "suspicion_reasons": [],
+    }
+
+    # 分析常量
+    for c in code.co_consts:
+        if isinstance(c, str) and len(c) > 0:
+            entry["constants_summary"].append({"type": "str", "value": c[:200]})
+            lower = c.lower()
+            for kw in _SUSPICIOUS_CONST_KEYWORDS:
+                if kw in lower:
+                    entry["is_suspicious"] = True
+                    entry["suspicion_reasons"].append(f"常量含关键词: {kw}")
+                    break
+        elif isinstance(c, bytes) and len(c) > 2:
+            entry["constants_summary"].append({"type": "bytes", "length": len(c), "preview": c[:50].hex()})
+        elif isinstance(c, int) and c not in (0, 1, -1, None, True, False):
+            entry["constants_summary"].append({"type": "int", "value": c})
+        elif isinstance(c, tuple) and len(c) > 0:
+            # 嵌套常量元组
+            entry["constants_summary"].append({"type": "tuple", "length": len(c)})
+
+    # 检查函数名是否可疑
+    name_lower = code.co_name.lower()
+    for kw in _SUSPICIOUS_KEYWORDS:
+        if kw in name_lower:
+            entry["is_suspicious"] = True
+            entry["suspicion_reasons"].append(f"函数名含关键词: {kw}")
+            break
+
+    # 检查调用的函数名
+    for n in code.co_names:
+        n_lower = n.lower()
+        for kw in _SUSPICIOUS_KEYWORDS:
+            if kw in n_lower:
+                entry["is_suspicious"] = True
+                if f"调用可疑函数: {n}" not in entry["suspicion_reasons"]:
+                    entry["suspicion_reasons"].append(f"调用可疑函数: {n}")
+                break
+
+    results.append(entry)
+
+    # 递归分析子 code object
+    for c in code.co_consts:
+        if hasattr(c, "co_name"):
+            sub_results = _analyze_code_object(c, prefix=f"{entry['name']}.")
+            results.extend(sub_results)
+
+    return results
+
+
+def _disassemble_code(code) -> list[dict[str, Any]]:
+    """反汇编 code object，返回指令列表。"""
+    import dis
+
+    instructions: list[dict[str, Any]] = []
+    try:
+        for instr in dis.get_instructions(code):
+            instructions.append({
+                "offset": instr.offset,
+                "opname": instr.opname,
+                "arg": instr.arg,
+                "argrepr": instr.argrepr,
+            })
+    except Exception:
+        pass
+    return instructions
+
+
+def triage_pyc(
+    target_path: str | Path,
+    output_dir: str | Path,
+    disassemble: bool = False,
+) -> dict[str, Any]:
+    """一键 Python .pyc 分析工作流。"""
+    import marshal
+
+    target = Path(target_path)
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    artifacts: dict[str, str] = {}
+    errors: list[str] = []
+
+    # 步骤1: 识别 .pyc 文件
+    try:
+        pyc_info = _identify_pyc(target)
+        info_path = out / "pyc_info.json"
+        info_path.write_text(json.dumps(pyc_info, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        artifacts["pyc_info"] = str(info_path)
+    except Exception as e:
+        errors.append(f"pyc 识别: {e}")
+        return {
+            "status": "error",
+            "target": str(target),
+            "errors": errors,
+            "artifacts": artifacts,
+        }
+
+    # 步骤2: 反序列化 code object
+    data = target.read_bytes()
+    code = None
+    try:
+        # 跳过 magic(4) + flags(4) + timestamp/hash(4/16) + source_size(4)
+        # Python 3.7+: magic(4) + flags(4) + [timestamp(4) or hash(16)] + source_size(4)
+        if pyc_info.get("is_hash_based"):
+            code_offset = 4 + 4 + 16 + 4  # magic + flags + hash + source_size
+        else:
+            code_offset = 4 + 4 + 4 + 4  # magic + flags + timestamp + source_size
+
+        # Python 3.8+ 可能还有更长的头部
+        # 尝试多个偏移量
+        for offset in (code_offset, 16, 12, 8):
+            try:
+                code = marshal.loads(data[offset:])
+                if hasattr(code, "co_name"):
+                    break
+                code = None
+            except Exception:
+                continue
+
+        if code is None:
+            errors.append("无法反序列化 code object，可能是不支持的 Python 版本或损坏的文件")
+    except Exception as e:
+        errors.append(f"反序列化: {e}")
+
+    if code is None:
+        return {
+            "status": "partial",
+            "target": str(target),
+            "errors": errors,
+            "artifacts": artifacts,
+            "pyc_info": pyc_info,
+        }
+
+    # 步骤3: 分析 code object
+    try:
+        code_analysis = _analyze_code_object(code)
+        analysis_path = out / "code_analysis.json"
+        analysis_path.write_text(json.dumps(code_analysis, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        artifacts["code_analysis"] = str(analysis_path)
+    except Exception as e:
+        errors.append(f"code object 分析: {e}")
+        code_analysis = []
+
+    # 步骤4: 可疑函数汇总
+    suspicious = [e for e in code_analysis if e.get("is_suspicious")]
+    suspicious_path = out / "suspicious_functions.json"
+    suspicious_path.write_text(json.dumps(suspicious, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    artifacts["suspicious_functions"] = str(suspicious_path)
+
+    # 步骤5: 可选 dis 反汇编
+    if disassemble:
+        try:
+            dis_result = _disassemble_code(code)
+            dis_path = out / "disassembly.json"
+            dis_path.write_text(json.dumps(dis_result, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+            artifacts["disassembly"] = str(dis_path)
+        except Exception as e:
+            errors.append(f"dis 反汇编: {e}")
+
+    # 步骤6: 生成汇总报告
+    summary = {
+        "target": str(target),
+        "python_version": pyc_info.get("python_version", "未知"),
+        "magic_number": pyc_info.get("magic_hex", "未知"),
+        "total_functions": len(code_analysis),
+        "suspicious_functions": len(suspicious),
+        "suspicious_list": [
+            {"name": s["name"], "reasons": s.get("suspicion_reasons", [])}
+            for s in suspicious
+        ],
+        "top_level_name": code.co_name if code else "未知",
+        "top_level_consts": [
+            c for c in code_analysis
+            if c["name"] == (code.co_name if code else "")
+        ],
+        "recommended_tools": [],
+    }
+
+    # 根据发现推荐工具
+    if suspicious:
+        summary["recommended_tools"].append("uncompyle6 / pycdc 反编译查看可疑函数完整代码")
+    if any("marshal" in str(s.get("suspicion_reasons", [])) or "marshal" in str(s.get("constants_summary", []))
+           for s in suspicious):
+        summary["recommended_tools"].append("检查 marshal.loads 调用，可能嵌套了加密的 code object")
+    if any("zlib" in str(s.get("suspicion_reasons", [])) or "zlib" in str(s.get("constants_summary", []))
+           for s in suspicious):
+        summary["recommended_tools"].append("检查 zlib.decompress 调用，可能压缩了数据")
+    if any("exec" in str(s.get("suspicion_reasons", [])) or "eval" in str(s.get("suspicion_reasons", []))
+           for s in suspicious):
+        summary["recommended_tools"].append("检查 exec/eval 调用，可能动态执行代码")
+
+    summary_path = out / "triage_pyc_summary.json"
+    summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    artifacts["summary"] = str(summary_path)
+
+    return {
+        "status": "ok" if not errors else "partial",
+        "target": str(target),
+        "python_version": pyc_info.get("python_version", "未知"),
+        "total_functions": len(code_analysis),
+        "suspicious_functions": len(suspicious),
+        "artifacts": artifacts,
+        "errors": errors,
+        "next_steps": [
+            "用 uncompyle6 / pycdc 反编译查看完整源码",
+            "重点分析可疑函数的完整逻辑",
+            "检查是否有 marshal/zlib/exec 嵌套加密",
         ],
     }

@@ -29,11 +29,19 @@ from beaconflow.fuzz_corpus import corpus_init, corpus_minimize, corpus_from_rep
 from beaconflow.dynamorio_custom import generate_client_template, run_custom_client, import_custom_trace
 from beaconflow.templates import suggest_hook, suggest_angr, suggest_debug, generate_template, list_templates
 from beaconflow.importers import import_frida_log, import_gdb_log, import_angr_result, import_jadx_summary
-from beaconflow.triage import triage_native, triage_qemu, triage_wasm
+from beaconflow.triage import triage_native, triage_qemu, triage_wasm, triage_pyc
+from beaconflow.benchmark import run_benchmark, run_all_benchmarks, list_benchmarks
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
+    from beaconflow.reports.html_report import markdown_to_html, json_to_html
+
     brief = fmt_choice == "markdown-brief"
+    if fmt_choice == "html":
+        md = md_func(result, brief=False, **kwargs)
+        return markdown_to_html(md, title="BeaconFlow Report")
+    if fmt_choice == "html-json":
+        return json_to_html(result, title="BeaconFlow Report")
     if fmt_choice in ("markdown", "markdown-brief"):
         return md_func(result, brief=brief, **kwargs)
     return json.dumps(result, indent=2)
@@ -79,6 +87,34 @@ def _cmd_schema(args: argparse.Namespace) -> int:
         Path(args.output).write_text(text, encoding="utf-8")
     else:
         print(text)
+    return 0
+
+
+def _cmd_to_html(args: argparse.Namespace) -> int:
+    from beaconflow.reports.html_report import markdown_to_html, json_to_html
+
+    src = Path(args.input)
+    if not src.exists():
+        print(f"Error: {src} not found", file=sys.stderr)
+        return 1
+
+    content = src.read_text(encoding="utf-8")
+    title = args.title or src.stem
+
+    if args.input_format == "json":
+        try:
+            data = json.loads(content)
+            html = json_to_html(data, title=title)
+        except json.JSONDecodeError:
+            html = markdown_to_html(content, title=title)
+    else:
+        html = markdown_to_html(content, title=title)
+
+    if args.output:
+        Path(args.output).write_text(html, encoding="utf-8")
+        print(f"HTML report written to {args.output}")
+    else:
+        print(html)
     return 0
 
 
@@ -1530,6 +1566,36 @@ def _cmd_triage_wasm(args: argparse.Namespace) -> int:
     return 0 if result.get("status") == "ok" else 1
 
 
+def _cmd_triage_pyc(args: argparse.Namespace) -> int:
+    result = triage_pyc(
+        target_path=args.target,
+        output_dir=args.output_dir,
+        disassemble=args.disassemble,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("status") == "ok" else 1
+
+
+def _cmd_benchmark(args: argparse.Namespace) -> int:
+    if args.list:
+        result = list_benchmarks()
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
+    if args.run:
+        result = run_benchmark(args.run, target_path=args.target, output_dir=args.output_dir)
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        return 0 if result.get("failed", 0) == 0 else 1
+    if args.run_all:
+        targets = {}
+        if args.targets_json:
+            targets = json.loads(Path(args.targets_json).read_text(encoding="utf-8"))
+        result = run_all_benchmarks(targets=targets, output_dir=args.output_dir)
+        print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
+        return 0 if result.get("total_failed", 0) == 0 else 1
+    print("Use --list, --run, or --run-all", file=sys.stderr)
+    return 1
+
+
 def _cmd_quickstart_pe(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -2182,6 +2248,21 @@ def build_parser() -> argparse.ArgumentParser:
     triage_wasm_p.add_argument("--output-dir", required=True, help="Output directory for all reports.")
     triage_wasm_p.set_defaults(func=_cmd_triage_wasm)
 
+    triage_pyc_p = sub.add_parser("triage-pyc", help="One-command Python .pyc triage workflow.")
+    triage_pyc_p.add_argument("--target", required=True, help="Target .pyc file.")
+    triage_pyc_p.add_argument("--output-dir", required=True, help="Output directory for all reports.")
+    triage_pyc_p.add_argument("--disassemble", action="store_true", help="Include disassembly in output.")
+    triage_pyc_p.set_defaults(func=_cmd_triage_pyc)
+
+    benchmark_p = sub.add_parser("benchmark", help="Run benchmark cases to validate BeaconFlow features.")
+    benchmark_p.add_argument("--list", action="store_true", help="List available benchmark cases.")
+    benchmark_p.add_argument("--run", help="Run a specific benchmark case by name.")
+    benchmark_p.add_argument("--run-all", action="store_true", help="Run all benchmark cases.")
+    benchmark_p.add_argument("--target", help="Target binary path for the benchmark.")
+    benchmark_p.add_argument("--targets-json", help="JSON file mapping case names to target paths.")
+    benchmark_p.add_argument("--output-dir", help="Output directory for benchmark results.")
+    benchmark_p.set_defaults(func=_cmd_benchmark)
+
     quick_pe = sub.add_parser("quickstart-pe", help="One-command PE workflow: Ghidra metadata, drcov collection, coverage, and flow reports.")
     quick_pe.add_argument("--target", required=True, help="PE executable to analyze.")
     quick_pe.add_argument("--output-dir", required=True, help="Directory for generated metadata, runs, and reports.")
@@ -2230,7 +2311,7 @@ def build_parser() -> argparse.ArgumentParser:
     quick_qemu.add_argument("--focus-function")
     quick_qemu.add_argument("--success-regex")
     quick_qemu.add_argument("--failure-regex")
-    quick_qemu.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="markdown")
+    quick_qemu.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="markdown")
     quick_qemu.add_argument("target_args", nargs=argparse.REMAINDER)
     quick_qemu.set_defaults(func=_cmd_quickstart_qemu)
 
@@ -2260,10 +2341,17 @@ def build_parser() -> argparse.ArgumentParser:
     schema.add_argument("--output")
     schema.set_defaults(func=_cmd_schema)
 
+    to_html = sub.add_parser("to-html", help="Convert a Markdown or JSON report to styled HTML.")
+    to_html.add_argument("--input", required=True, help="Input Markdown or JSON report file.")
+    to_html.add_argument("--input-format", choices=("markdown", "json"), default="markdown", help="Input file format.")
+    to_html.add_argument("--output", help="Output HTML file path (default: stdout).")
+    to_html.add_argument("--title", help="HTML page title (default: input filename stem).")
+    to_html.set_defaults(func=_cmd_to_html)
+
     analyze = sub.add_parser("analyze", help="Analyze drcov coverage against exported IDA metadata.")
     analyze.add_argument("--metadata", required=True, help="IDA metadata JSON exported by ida_scripts/export_ida_metadata.py")
     analyze.add_argument("--coverage", required=True, help="DynamoRIO drcov coverage file")
-    analyze.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    analyze.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     analyze.add_argument("--output")
     analyze.set_defaults(func=_cmd_analyze)
 
@@ -2282,7 +2370,7 @@ def build_parser() -> argparse.ArgumentParser:
     flow.add_argument("--block-size", type=int, default=4, help="Instruction/block size for --address-log input.")
     flow.add_argument("--address-min", help="Keep only address-log events at or above this address.")
     flow.add_argument("--address-max", help="Keep only address-log events below this address.")
-    flow.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    flow.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     flow.add_argument("--focus-function", help="Only keep events mapped to this function name or start address.")
     flow.add_argument("--from", dest="from_", help="Start address or function name for range filtering (inclusive).")
     flow.add_argument("--to", dest="to", help="End address or function name for range filtering (exclusive).")
@@ -2303,7 +2391,7 @@ def build_parser() -> argparse.ArgumentParser:
     flow_diff.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
     flow_diff.add_argument("--address-min", help="Keep only address-log events at or above this address.")
     flow_diff.add_argument("--address-max", help="Keep only address-log events below this address.")
-    flow_diff.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    flow_diff.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     flow_diff.add_argument("--output")
     flow_diff.set_defaults(func=_cmd_flow_diff)
 
@@ -2321,7 +2409,7 @@ def build_parser() -> argparse.ArgumentParser:
     deflatten.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
     deflatten.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
     deflatten.add_argument("--dispatcher-mode", choices=("strict", "balanced", "aggressive"), default="strict", help="Dispatcher selection mode. strict requires hot + multi-predecessor + multi-successor shape; aggressive is legacy heuristic-like.")
-    deflatten.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    deflatten.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     deflatten.add_argument("--output")
     deflatten.set_defaults(func=_cmd_deflatten)
 
@@ -2341,7 +2429,7 @@ def build_parser() -> argparse.ArgumentParser:
     deflatten_merge_parser.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
     deflatten_merge_parser.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
     deflatten_merge_parser.add_argument("--dispatcher-mode", choices=("strict", "balanced", "aggressive"), default="strict", help="Dispatcher selection mode. strict avoids hot-loop/state-machine false positives; aggressive is legacy heuristic-like.")
-    deflatten_merge_parser.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    deflatten_merge_parser.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     deflatten_merge_parser.add_argument("--output")
     deflatten_merge_parser.set_defaults(func=_cmd_deflatten_merge)
 
@@ -2361,7 +2449,7 @@ def build_parser() -> argparse.ArgumentParser:
     recover_state_parser.add_argument("--dispatcher-min-pred", type=int, default=2, help="Min predecessors for dispatcher (default: 2).")
     recover_state_parser.add_argument("--dispatcher-min-succ", type=int, default=2, help="Min successors for dispatcher (default: 2).")
     recover_state_parser.add_argument("--dispatcher-mode", choices=("strict", "balanced", "aggressive"), default="strict", help="Dispatcher selection mode. strict avoids hot-loop/state-machine false positives; aggressive is legacy heuristic-like.")
-    recover_state_parser.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    recover_state_parser.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     recover_state_parser.add_argument("--output")
     recover_state_parser.set_defaults(func=_cmd_recover_state)
 
@@ -2385,7 +2473,7 @@ def build_parser() -> argparse.ArgumentParser:
     branch_rank.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
     branch_rank.add_argument("--address-min", help="Keep only address-log events at or above this address.")
     branch_rank.add_argument("--address-max", help="Keep only address-log events below this address.")
-    branch_rank.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    branch_rank.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     branch_rank.add_argument("--top", type=int, default=10, help="Only show top N ranked branches in markdown report (default: 10).")
     branch_rank.add_argument("--output")
     branch_rank.set_defaults(func=_cmd_branch_rank)
@@ -2393,27 +2481,27 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_block = sub.add_parser("inspect-block", help="Show detailed context for a single basic block.")
     inspect_block.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
     inspect_block.add_argument("--address", required=True, help="Block start address (e.g. 0x1400014c7).")
-    inspect_block.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    inspect_block.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     inspect_block.set_defaults(func=_cmd_inspect_block)
 
     inspect_func = sub.add_parser("inspect-function", help="Show detailed context for a function and its blocks.")
     inspect_func.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
     inspect_func.add_argument("--name", help="Function name (e.g. check_flag).")
     inspect_func.add_argument("--address", help="Function start address (e.g. 0x140001460).")
-    inspect_func.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    inspect_func.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     inspect_func.set_defaults(func=_cmd_inspect_function)
 
     find_dp = sub.add_parser("find-decision-points", help="Find and prioritize decision points (cmp+jcc, test+jcc, checker calls, cmovcc, setcc, jump tables).")
     find_dp.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
     find_dp.add_argument("--focus-function", help="Only find decision points in this function (name or address).")
-    find_dp.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    find_dp.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     find_dp.add_argument("--output")
     find_dp.set_defaults(func=_cmd_find_decision_points)
 
     inspect_dp = sub.add_parser("inspect-decision-point", help="Inspect a single decision point by block address.")
     inspect_dp.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
     inspect_dp.add_argument("--address", required=True, help="Block start address of the decision point (e.g. 0x1400014c7).")
-    inspect_dp.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    inspect_dp.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     inspect_dp.set_defaults(func=_cmd_inspect_decision_point)
 
     detect_roles = sub.add_parser("detect-roles", help="Detect candidate roles for functions (validator, crypto, dispatcher, etc.) using configurable rules.")
@@ -2421,7 +2509,7 @@ def build_parser() -> argparse.ArgumentParser:
     detect_roles.add_argument("--rules", help="Path to custom role rules YAML file.")
     detect_roles.add_argument("--focus-function", help="Only detect roles for this function (name or address).")
     detect_roles.add_argument("--min-score", type=float, default=0.1, help="Minimum score threshold (default: 0.1).")
-    detect_roles.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    detect_roles.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     detect_roles.add_argument("--output")
     detect_roles.set_defaults(func=_cmd_detect_roles)
 
@@ -2430,7 +2518,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_role_cmd.add_argument("--name", help="Function name to inspect.")
     inspect_role_cmd.add_argument("--address", help="Function start address to inspect (e.g. 0x401000).")
     inspect_role_cmd.add_argument("--rules", help="Path to custom role rules YAML file.")
-    inspect_role_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    inspect_role_cmd.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     inspect_role_cmd.set_defaults(func=_cmd_inspect_role)
 
     trace_values = sub.add_parser("trace-values", help="Trace register/memory/compare values at key decision points.")
@@ -2442,7 +2530,7 @@ def build_parser() -> argparse.ArgumentParser:
     trace_values.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
     trace_values.add_argument("--address-min")
     trace_values.add_argument("--address-max")
-    trace_values.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    trace_values.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     trace_values.add_argument("--output")
     trace_values.set_defaults(func=_cmd_trace_values)
 
@@ -2455,20 +2543,20 @@ def build_parser() -> argparse.ArgumentParser:
     trace_compare.add_argument("--block-size", type=int, default=4, help="Instruction/block size for address-log inputs.")
     trace_compare.add_argument("--address-min")
     trace_compare.add_argument("--address-max")
-    trace_compare.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    trace_compare.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     trace_compare.add_argument("--output")
     trace_compare.set_defaults(func=_cmd_trace_compare)
 
     doctor = sub.add_parser("doctor", help="Check BeaconFlow environment and dependencies.")
     doctor.add_argument("--qemu-arch", help="Check specific QEMU arch (e.g. loongarch64, mips, arm).")
     doctor.add_argument("--target", help="Check if a target binary file exists.")
-    doctor.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    doctor.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     doctor.set_defaults(func=_cmd_doctor)
 
     input_taint = sub.add_parser("input-taint", help="Lightweight taint analysis: trace input bytes to branch decisions.")
     input_taint.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
     input_taint.add_argument("--focus-function", help="Only analyze taint in this function (name or address).")
-    input_taint.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    input_taint.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     input_taint.add_argument("--output")
     input_taint.set_defaults(func=_cmd_input_taint)
 
@@ -2477,7 +2565,7 @@ def build_parser() -> argparse.ArgumentParser:
     feedback_explore.add_argument("--focus-function", help="Only explore compares in this function.")
     feedback_explore.add_argument("--input-file", help="Current input file to patch (optional).")
     feedback_explore.add_argument("--input-offset-base", type=int, default=0, help="Base offset for input patches.")
-    feedback_explore.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    feedback_explore.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     feedback_explore.add_argument("--output")
     feedback_explore.set_defaults(func=_cmd_feedback_explore)
 
@@ -2485,7 +2573,7 @@ def build_parser() -> argparse.ArgumentParser:
     decompile_func.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
     decompile_func.add_argument("--name", help="Function name to decompile.")
     decompile_func.add_argument("--address", help="Function start address to decompile (e.g. 0x401000).")
-    decompile_func.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    decompile_func.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     decompile_func.add_argument("--output")
     decompile_func.set_defaults(func=_cmd_decompile_function)
 
@@ -2493,14 +2581,14 @@ def build_parser() -> argparse.ArgumentParser:
     normalize_ir.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
     normalize_ir.add_argument("--name", help="Function name to convert.")
     normalize_ir.add_argument("--address", help="Function start address (e.g. 0x401000).")
-    normalize_ir.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    normalize_ir.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     normalize_ir.add_argument("--output")
     normalize_ir.set_defaults(func=_cmd_normalize_ir)
 
     sig_match = sub.add_parser("sig-match", help="Match crypto/VM/packer/anti-debug signatures in metadata.")
     sig_match.add_argument("--metadata", required=True, help="Path to metadata JSON file.")
     sig_match.add_argument("--sig-library", help="Path to custom signature library YAML file.")
-    sig_match.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    sig_match.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     sig_match.add_argument("--output")
     sig_match.set_defaults(func=_cmd_sig_match)
 
@@ -2508,7 +2596,7 @@ def build_parser() -> argparse.ArgumentParser:
     ai_summary.add_argument("--input", required=True, help="Input BeaconFlow JSON report.")
     ai_summary.add_argument("--kind", choices=("coverage", "flow", "flow_diff", "deflatten", "deflatten_merge", "recover_state", "branch_rank", "qemu_explore", "unknown"), help="Report kind. Auto-detected if omitted.")
     ai_summary.add_argument("--max-findings", type=int, default=5)
-    ai_summary.add_argument("--format", choices=("json", "markdown"), default="json")
+    ai_summary.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="json")
     ai_summary.add_argument("--output")
     ai_summary.set_defaults(func=_cmd_ai_summary)
 
@@ -2549,7 +2637,7 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--drrun")
     record.add_argument("--timeout", type=int, default=120, help="Timeout in seconds (default: 120).")
     record.add_argument("--max-events", type=int, default=0, help="Maximum flow events to return; 0 means all.")
-    record.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    record.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     record.add_argument("--focus-function", help="Only keep events mapped to this function name or start address.")
     record.add_argument("--output")
     record.add_argument("--stdin", help="Text to send to target stdin.")
@@ -2608,7 +2696,7 @@ def build_parser() -> argparse.ArgumentParser:
     qemu_explore.add_argument("--focus-function")
     qemu_explore.add_argument("--success-regex", help="Classify runs as success when stdout/stderr matches.")
     qemu_explore.add_argument("--failure-regex", help="Classify runs as failure when stdout/stderr matches.")
-    qemu_explore.add_argument("--format", choices=("json", "markdown", "markdown-brief"), default="json")
+    qemu_explore.add_argument("--format", choices=("json", "markdown", "markdown-brief", "html", "html-json"), default="json")
     qemu_explore.add_argument("--output")
     qemu_explore.add_argument("target_args", nargs=argparse.REMAINDER)
     qemu_explore.set_defaults(func=_cmd_qemu_explore)
@@ -2643,7 +2731,7 @@ def build_parser() -> argparse.ArgumentParser:
     wasm_analyze = sub.add_parser("wasm-analyze", help="Analyze a WebAssembly module: imports, exports, strings, data segments, and function summaries.")
     wasm_analyze.add_argument("--target", required=True, help="WASM binary file to analyze.")
     wasm_analyze.add_argument("--output", help="Output report path.")
-    wasm_analyze.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    wasm_analyze.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     wasm_analyze.add_argument("--min-string", type=int, default=4, help="Minimum ASCII string length to report.")
     wasm_analyze.add_argument("--max-functions", type=int, default=0, help="Limit function summaries; 0 means all.")
     wasm_analyze.set_defaults(func=_cmd_wasm_analyze)
@@ -2658,7 +2746,7 @@ def build_parser() -> argparse.ArgumentParser:
     trace_calls_cmd.add_argument("--hook", help="Comma-separated list of functions to hook (default: strcmp,strncmp,memcmp,strlen,...).")
     trace_calls_cmd.add_argument("--max-read", type=int, default=128, help="Max bytes to read from pointer args.")
     trace_calls_cmd.add_argument("--max-events", type=int, default=1000, help="Max events to capture.")
-    trace_calls_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    trace_calls_cmd.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     trace_calls_cmd.add_argument("--output", help="Output file path.")
     trace_calls_cmd.add_argument("program_args", nargs="*", help="Arguments to pass to the target.")
     trace_calls_cmd.set_defaults(func=_cmd_trace_calls)
@@ -2675,7 +2763,7 @@ def build_parser() -> argparse.ArgumentParser:
     trace_compare_cmd.add_argument("--address-max", help="Maximum address to hook (hex).")
     trace_compare_cmd.add_argument("--timeout", type=int, default=30, help="Timeout in seconds.")
     trace_compare_cmd.add_argument("--max-events", type=int, default=1000, help="Max events to capture.")
-    trace_compare_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    trace_compare_cmd.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     trace_compare_cmd.add_argument("--output", help="Output file path.")
     trace_compare_cmd.add_argument("program_args", nargs="*", help="Arguments to pass to the target.")
     trace_compare_cmd.set_defaults(func=_cmd_trace_compare_rt)
@@ -2694,7 +2782,7 @@ def build_parser() -> argparse.ArgumentParser:
     auto_explore_cmd.add_argument("--positions", help="Mutation position range (e.g. '5:37').")
     auto_explore_cmd.add_argument("--alphabet", help="Mutation character set.")
     auto_explore_cmd.add_argument("--case-dir", help="Case workspace directory for saving candidates.")
-    auto_explore_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    auto_explore_cmd.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     auto_explore_cmd.add_argument("--output", help="Output file path.")
     auto_explore_cmd.set_defaults(func=_cmd_auto_explore_loop)
 
@@ -2707,7 +2795,7 @@ def build_parser() -> argparse.ArgumentParser:
     input_impact_cmd.add_argument("--max-mutations", type=int, default=8, help="Max mutations per position.")
     input_impact_cmd.add_argument("--timeout", type=int, default=10, help="Timeout per run (seconds).")
     input_impact_cmd.add_argument("--run-cwd", help="Working directory for target.")
-    input_impact_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    input_impact_cmd.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     input_impact_cmd.add_argument("--output", help="Output file path.")
     input_impact_cmd.set_defaults(func=_cmd_input_impact)
 
@@ -2718,12 +2806,12 @@ def build_parser() -> argparse.ArgumentParser:
     init_case_cmd.add_argument("--backend", choices=("qemu", "dynamorio"), default="qemu", help="Execution backend.")
     init_case_cmd.add_argument("--root", help="Workspace root directory (default: current directory).")
     init_case_cmd.add_argument("--overwrite", action="store_true", help="Overwrite existing workspace.")
-    init_case_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    init_case_cmd.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     init_case_cmd.set_defaults(func=_cmd_init_case)
 
     summarize_case_cmd = sub.add_parser("summarize-case", help="Summarize the current case workspace status.")
     summarize_case_cmd.add_argument("--root", help="Workspace root directory.")
-    summarize_case_cmd.add_argument("--format", choices=("json", "markdown"), default="markdown")
+    summarize_case_cmd.add_argument("--format", choices=("json", "markdown", "html", "html-json"), default="markdown")
     summarize_case_cmd.add_argument("--output", help="Output file path.")
     summarize_case_cmd.set_defaults(func=_cmd_summarize_case)
 
