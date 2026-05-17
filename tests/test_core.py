@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import json
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from beaconflow.analysis import deflatten_flow, diff_flow, rank_input_branches
+from beaconflow.analysis import build_block_context_report, deflatten_flow, diff_flow, rank_input_branches
 from beaconflow.analysis.ai_digest import compact_report, infer_report_kind
+from beaconflow.address_range import detect_executable_address_range
 from beaconflow.cli import _mutated_inputs, _parse_mutate_positions, _seed_from_mutate_format
 from beaconflow.coverage import load_address_log, load_drcov
 from beaconflow.mcp.server import TOOLS
-from beaconflow.models import BasicBlock, CoverageBlock, CoverageData, Function, ProgramMetadata
+from beaconflow.models import BasicBlock, BlockContext, CoverageBlock, CoverageData, Function, ProgramMetadata
 
 
 def _metadata() -> ProgramMetadata:
@@ -49,6 +52,36 @@ def _loop_metadata() -> ProgramMetadata:
 
 
 class ParserTests(unittest.TestCase):
+    def test_elf_executable_load_range_detection(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "target.elf"
+            ident = b"\x7fELF" + bytes([2, 1, 1]) + b"\x00" * 9
+            header = struct.pack(
+                "<16sHHIQQQIHHHHHH",
+                ident,
+                2,
+                0x3e,
+                1,
+                0x401000,
+                0x40,
+                0,
+                0,
+                0x40,
+                0x38,
+                2,
+                0,
+                0,
+                0,
+            )
+            exec_load = struct.pack("<IIQQQQQQ", 1, 5, 0x1000, 0x401000, 0x401000, 0x200, 0x300, 0x1000)
+            data_load = struct.pack("<IIQQQQQQ", 1, 6, 0x2000, 0x404000, 0x404000, 0x100, 0x100, 0x1000)
+            path.write_bytes(header + exec_load + data_load)
+
+            result = detect_executable_address_range(path)
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["address_min"], "0x401000")
+            self.assertEqual(result["address_max"], "0x401300")
+
     def test_qemu_address_log_parser_supports_common_formats(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "qemu.log"
@@ -116,6 +149,10 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(result["ai_digest"]["recommended_actions"][0]["kind"], "open_disassembly")
         self.assertEqual(result["ranked_branches"][0]["block"], "check:0x1000")
         self.assertGreaterEqual(result["ranked_branches"][0]["new_successors_vs_baseline"], 1)
+        confidence = result["report_confidence"]
+        self.assertIn(confidence["level"], {"high", "medium", "low"})
+        self.assertIsInstance(confidence["score"], int)
+        self.assertTrue(confidence["recommendation"])
 
     def test_strict_dispatcher_mode_does_not_remove_hot_loop(self) -> None:
         metadata = _loop_metadata()
@@ -125,6 +162,26 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(strict["summary"]["dispatcher_blocks"], 0)
         self.assertGreaterEqual(aggressive["summary"]["dispatcher_blocks"], 1)
         self.assertTrue(any(item["warnings"] for item in aggressive["dispatcher_candidates"]))
+
+    def test_block_context_report_explains_comparisons_and_reasons(self) -> None:
+        block = BasicBlock(
+            0x1000,
+            0x1010,
+            (0x1020, 0x1030),
+            context=BlockContext(
+                instructions=("cmp eax, 0x41", "jne 0x1030", "call strcmp"),
+                calls=("strcmp",),
+                strings=("Wrong",),
+                constants=(0x41,),
+            ),
+        )
+        pred = BasicBlock(0x0ff0, 0x1000, (0x1000,))
+        func = Function("check", 0x0ff0, 0x1040, (pred, block))
+        report = build_block_context_report(func, block)
+        self.assertEqual(report["predecessors"], ["0xff0"])
+        self.assertEqual(report["recommendation"]["priority"], "high")
+        self.assertGreaterEqual(len(report["nearby_comparisons"]), 2)
+        self.assertTrue(any("multiple successors" in reason for reason in report["recommendation"]["reasons"]))
 
     def test_deflatten_warns_when_qemu_in_asm_counts_are_used(self) -> None:
         metadata = _loop_metadata()
@@ -227,6 +284,23 @@ class McpTests(unittest.TestCase):
         for name in ["analyze_flow", "diff_flow", "qemu_explore", "branch_rank", "recover_state_transitions", "ai_summary"]:
             self.assertIn(name, TOOLS)
             self.assertIn("inputSchema", TOOLS[name])
+
+    def test_qemu_explore_schema_exposes_auto_address_range(self) -> None:
+        props = TOOLS["qemu_explore"]["inputSchema"]["properties"]
+        self.assertIn("auto_address_range", props)
+        self.assertEqual(props["auto_address_range"]["default"], True)
+
+
+class CliTests(unittest.TestCase):
+    def test_cli_help_lists_quickstart_and_qemu_commands(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, "-m", "beaconflow.cli", "--help"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("quickstart-qemu", completed.stdout)
+        self.assertIn("qemu-explore", completed.stdout)
 
 
 if __name__ == "__main__":

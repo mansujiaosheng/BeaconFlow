@@ -17,6 +17,18 @@ python -m beaconflow.cli --help
 
 Use `python -m beaconflow.mcp.server` or `beaconflow-mcp` for the stdio MCP server.
 
+## Quickstart Bias
+
+When the user wants a first-pass result rather than a custom pipeline, prefer:
+
+```powershell
+python -m beaconflow.cli quickstart-pe --target target.exe --output-dir beacon_quick -- arg1
+python -m beaconflow.cli quickstart-qemu --target flagchecker --qemu-arch loongarch64 --output-dir beacon_qemu --stdin "test" --auto-newline --format markdown
+python -m beaconflow.cli quickstart-flatten --metadata metadata.json --address-log run.in_asm.qemu.log --output-dir beacon_flatten --address-min 0x220000 --address-max 0x244000
+```
+
+Each quickstart writes a `quickstart-*.md` index plus JSON/Markdown artifacts in its output directory.
+
 ## Two Workflows
 
 ### Workflow A: IDA/Ghidra + DynamoRIO (x86/x64 targets)
@@ -85,8 +97,6 @@ Use when IDA cannot open the target (unsupported architecture) or no DynamoRIO i
      "auto_newline": true,
      "failure_regex": "Wrong",
      "success_regex": "Correct",
-     "address_min": "0x220000",
-     "address_max": "0x244000",
      "gap": "0x200",
      "jobs": 3,
      "format": "markdown"
@@ -95,7 +105,7 @@ Use when IDA cannot open the target (unsupported architecture) or no DynamoRIO i
 
    `qemu_explore` runs all inputs in parallel, classifies verdicts, and ranks path novelty. The input with the highest `new_blocks_vs_baseline` triggered the most new code paths and should be analyzed first.
 
-   For large static ELF targets, always narrow the target code range with `address_min` / `address_max` before trusting runtime. A full LoongArch static binary trace can spend minutes clustering loader/libc addresses; the ACTF flagchecker test completed quickly when limited to `0x220000`-`0x244000`.
+   For large static ELF targets, `qemu_explore` now tries to infer `address_min` / `address_max` from executable ELF `PT_LOAD` segments. Check `summary.auto_address_range`; if the inferred range still includes too much static library code, narrow it manually before deeper analysis.
 
 3. Generate fallback metadata with `metadata_from_address_log`, then use `analyze_flow` and `diff_flow` the same way as Workflow A.
 
@@ -160,6 +170,7 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
 | `qemu_explore` | Run multiple QEMU traced inputs in parallel, classify verdicts, rank path novelty. |
 | `analyze_coverage` | Map drcov blocks to IDA/Ghidra-exported functions and basic blocks. |
 | `analyze_flow` | Map a drcov or address-log file to ordered basic-block flow and real transitions. |
+| `inspect_block` | Show instructions, predecessors/successors, calls, strings, constants, nearby comparisons, and reasons the block is or is not worth manual inspection. |
 | `deflatten_flow` | Remove dispatcher blocks from execution flow, reconstruct real control flow edges. Key tool for CFF deflattening. |
 | `deflatten_merge` | Merge multiple deflatten results to restore complete real CFG. Identifies common paths and input-dependent branches. |
 | `recover_state_transitions` | Recover state transition table from multiple traces. Identifies deterministic vs input-dependent state variable transitions for CFF deflattening. |
@@ -201,13 +212,14 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
   - `D:\CTF\ISCC2026\qu\re3-lei\box.wasm` for WASM metadata, WASM triage, normalized IR, signature matching, roles, and pseudo-code.
 - MCP static compare analysis is named `analyze_compare`; runtime Frida compare tracing is named `trace_compare`.
 - MCP `branch_rank` expects a baseline `bad_coverage_path` or `bad_address_log_path`, plus optional `better_*` / `good_*` traces. Do not pass generic `coverage_paths` to this tool.
+- CI lives in `.github/workflows/ci.yml`: unit tests run on Ubuntu/Windows with Python 3.10/3.12, and Windows smoke covers PE generation, DynamoRIO drcov, coverage, and flow.
 
 ## Key Parameters
 
 - `auto_newline`: Append `\n` to stdin if missing. Many programs (flag checkers, CTF challenges) require a newline to read stdin. Default is `true` for QEMU tools, `false` for drcov tools.
 - `trace_mode`: QEMU `-d` flag. `in_asm` (default) is a translation-block log — hit counts are not precise loop counts. Use `exec,nochain` for precise execution counts.
 - `dispatcher_mode`: Dispatcher selection mode for `deflatten_flow`, `deflatten_merge`, and `recover_state_transitions`. Default is `strict`, which requires hot + multi-predecessor + multi-successor shape and is safer against hot-loop/state-machine false positives. Use `balanced` for more candidates, `aggressive` for legacy heuristic-like exploration.
-- `address_min` / `address_max`: Filter address-log events to a specific range. Essential for stripping QEMU runtime noise from the target's own code.
+- `address_min` / `address_max`: Filter address-log events to a specific range. QEMU exploration and address-log metadata generation infer these from ELF executable LOAD segments when omitted; pass explicit values when you need to narrow from whole target text to a core function range.
 - `gap`: Address clustering threshold for `metadata_from_address_log`. Addresses separated by more than this gap start a new function region.
 - `success_regex` / `failure_regex`: Classify `qemu_explore` runs by matching stdout/stderr.
 - `jobs`: Number of parallel QEMU workers in `qemu_explore`. Default is all inputs in parallel.
@@ -225,6 +237,7 @@ When using QEMU `in_asm`, do not use hit counts as a decisive dispatcher signal.
 
 ## Interpretation Rules
 
+- Always read `report_confidence` when present. `high` means the report can drive the next action; `medium` means use it for prioritization and confirm important claims; `low` means exploratory only.
 - First read top-level `ai_digest` and `data_quality` before scanning long lists. `ai_digest.top_findings` gives the highest-value evidence, `recommended_actions` gives machine-actionable next steps, and `data_quality.hit_count_precision` tells whether hit counts are reliable.
 - Use `ai-summary` / `ai_summary` on large saved JSON reports before loading the full report into context.
 - BeaconFlow preserves the drcov BB Table order (or QEMU address log order) to recover the observed basic-block flow for one run.

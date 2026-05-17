@@ -312,6 +312,9 @@ CLI 用短横线，MCP 用下划线：
 
 | CLI | MCP |
 | --- | --- |
+| `quickstart-pe` | CLI only |
+| `quickstart-qemu` | CLI only |
+| `quickstart-flatten` | CLI only |
 | `analyze` | `analyze_coverage` |
 | `diff` | `diff_coverage` |
 | `flow` | `analyze_flow` |
@@ -331,6 +334,8 @@ CLI 用短横线，MCP 用下划线：
 | `add-run` | `add_run_to_case` |
 | `add-report` | `add_report_to_case` |
 | `add-note` | `add_note_to_case` |
+
+Quickstart 命令是面向人和 Agent 的高层编排入口，会在输出目录生成多个底层报告；MCP 侧仍保持工具粒度，方便客户端按步骤组合。
 
 ## 7. 开发目录结构
 
@@ -427,8 +432,9 @@ print(res["content"][0]["text"])
 - 如果 `tools/call` 返回 JSON-RPC `error`，视为协议或未捕获异常。
 - 如果 `result.content[0].text` 是 `# Error` 或包含 `{"status":"error"}`，视为业务失败。
 - 对 `check_update` 的网络失败只做 warning，不阻塞主流程。
+- 优先读取 `report_confidence`。`level=medium/low` 时只能把报告当作 triage 排序，关键结论必须回到反汇编、伪代码或更强 trace 交叉验证。
 - 对 QEMU `in_asm` 报告，必须检查 `data_quality.hit_count_precision`；值为 `translation-log` 时，不要把 hit count 当精确循环次数。
-- 对大型 address log，先传 `address_min/address_max`，再做 `qemu_explore`、`metadata_from_address_log`、`diff_flow`。
+- 对大型 address log，优先检查 `summary.auto_address_range` 或手工传 `address_min/address_max`，再做 `qemu_explore`、`metadata_from_address_log`、`diff_flow`。`qemu_explore` 和 `metadata_from_address_log` 默认会从 ELF executable `PT_LOAD` 段自动推断范围；如果静态库代码仍太多，客户端应提示用户手工收窄。
 - 对 Frida 工具，零事件不一定是失败，可能是目标没调用被 hook 函数、地址不对或进程过快退出。
 
 ## 11. 推荐的 Agent 工作流
@@ -441,3 +447,27 @@ print(res["content"][0]["text"])
 6. 对可疑函数跑 `inspect_function`、`find_decision_points`、`analyze_compare`、`normalize_ir`、`sig_match`。
 7. 对平坦化目标跑 `deflatten_flow`、`deflatten_merge`、`recover_state_transitions`。
 8. 用 `init_case` / `add_note_to_case` 持久化中间证据。
+
+## 12. 开发与 CI
+
+提交前至少运行：
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+python -m beaconflow.cli --help
+python tests\smoke_beaconflow.py
+```
+
+CI 在 `.github/workflows/ci.yml` 中定义：
+
+- Ubuntu/Windows x Python 3.10/3.12：安装 `.[mcp]`、`compileall`、单元测试、CLI help。
+- Windows smoke：安装 MinGW，运行 `tests\smoke_beaconflow.py`，覆盖 PE 生成、DynamoRIO drcov、coverage/flow 分析。
+
+新增 MCP 工具或报告字段时，同步更新 `TOOLS` schema、CLI parser、README/API 文档，并在 `tests/test_core.py` 增加 schema 或 report shape 断言。
+
+`inspect_block` 返回的 block context 字段包括：
+
+- `context.instructions/calls/strings/constants/data_refs/code_refs`
+- `predecessors` / `successors`
+- `nearby_comparisons`：从指令文本中提取的 compare/test/conditional branch/move/set 线索
+- `recommendation.priority` 与 `recommendation.reasons`：说明这个块为什么值得打开反汇编继续看

@@ -6,7 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, match_signatures, normalize_to_ir, rank_input_branches, recover_state_transitions, sig_match_to_markdown
+from beaconflow.analysis import analyze_coverage, analyze_decision_points, analyze_flow, analyze_input_taint, analyze_roles, analyze_trace_compare, analyze_value_trace, build_block_context_report, decompile_function, decompile_to_markdown, deflatten_flow, deflatten_merge, diff_coverage, diff_flow, feedback_auto_explore, find_decision_points, inspect_decision_point, inspect_role, ir_to_markdown, match_signatures, normalize_to_ir, rank_input_branches, recover_state_transitions, sig_match_to_markdown
+from beaconflow.address_range import detect_executable_address_range
 from beaconflow.analysis.ai_digest import attach_ai_digest, compact_report, infer_report_kind
 from beaconflow.coverage import collect_qemu_trace, load_address_log, load_drcov, qemu_available
 from beaconflow.coverage.runner import collect_drcov
@@ -99,6 +100,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "image_base": {"type": "string", "default": "0"},
                 "address_min": {"type": "string"},
                 "address_max": {"type": "string"},
+                "auto_address_range": {"type": "boolean", "default": True, "description": "Infer address_min/address_max from input_path ELF executable LOAD segments when omitted."},
                 "block_size": {"type": "integer", "default": 4},
                 "gap": {"type": "string", "default": "0x100"},
                 "name_prefix": {"type": "string", "default": "trace_region"},
@@ -179,6 +181,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "timeout": {"type": "integer", "default": 120},
                 "address_min": {"type": "string"},
                 "address_max": {"type": "string"},
+                "auto_address_range": {"type": "boolean", "default": True, "description": "Infer address_min/address_max from ELF executable LOAD segments when omitted."},
                 "gap": {"type": "string", "default": "0x100"},
                 "name_prefix": {"type": "string", "default": "qemu_trace"},
                 "allow_unbounded_address_logs": {"type": "boolean", "default": False, "description": "Allow post-processing large QEMU logs without address_min/address_max. By default BeaconFlow returns a warning instead of spending minutes clustering runtime/library addresses."},
@@ -719,6 +722,37 @@ def _parse_optional_int(value: str | None) -> int | None:
     return int(value, 16) if value.lower().startswith("0x") else int(value)
 
 
+def _maybe_auto_address_range(arguments: dict[str, Any], path_key: str) -> dict[str, Any] | None:
+    if arguments.get("address_min") or arguments.get("address_max"):
+        return None
+    if arguments.get("auto_address_range", True) is False:
+        return None
+    path = arguments.get(path_key)
+    if not path:
+        return None
+    detected = detect_executable_address_range(path)
+    if detected and detected.get("status") == "ok":
+        arguments["address_min"] = detected["address_min"]
+        arguments["address_max"] = detected["address_max"]
+    return detected
+
+
+def _auto_address_range_summary(detected: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not detected:
+        return None
+    summary = {
+        "status": detected.get("status"),
+        "source": detected.get("source"),
+        "address_min": detected.get("address_min"),
+        "address_max": detected.get("address_max"),
+    }
+    if detected.get("reason"):
+        summary["reason"] = detected.get("reason")
+    if detected.get("format"):
+        summary["format"] = detected.get("format")
+    return summary
+
+
 def _ensure_newline(text: str | None, auto_newline: bool) -> str | None:
     if text is None or not auto_newline:
         return text
@@ -760,6 +794,7 @@ def _mcp_qemu_explore(arguments: dict[str, Any]) -> dict[str, Any]:
     auto_nl = arguments.get("auto_newline", True)
     output_dir = Path(arguments.get("output_dir") or "qemu_explore")
     output_dir.mkdir(parents=True, exist_ok=True)
+    detected_range = _maybe_auto_address_range(arguments, "target_path")
     total = len(stdin_cases)
     max_workers = min(total, arguments.get("jobs") or total)
 
@@ -813,6 +848,7 @@ def _mcp_qemu_explore(arguments: dict[str, Any]) -> dict[str, Any]:
                 "runs": len(report_runs),
                 "total_log_bytes": total_log_bytes,
                 "max_unbounded_log_bytes": max_unbounded,
+                "auto_address_range": _auto_address_range_summary(detected_range),
             },
             "runs": report_runs,
             "warnings": [
@@ -897,6 +933,9 @@ def _mcp_qemu_explore(arguments: dict[str, Any]) -> dict[str, Any]:
             "total_log_bytes": total_log_bytes,
             "total_union_functions": len(metadata.functions),
             "total_union_blocks": sum(len(f.blocks) for f in metadata.functions),
+            "address_min": arguments.get("address_min"),
+            "address_max": arguments.get("address_max"),
+            "auto_address_range": _auto_address_range_summary(detected_range),
         },
         "runs": report_runs,
     })
@@ -913,6 +952,13 @@ def _qemu_explore_to_markdown(report: dict[str, Any]) -> str:
         f"- Trace mode: `{summary.get('trace_mode', '')}`",
         f"- Runs: {summary.get('runs', 0)}",
     ]
+    if summary.get("address_min") or summary.get("address_max"):
+        lines.append(f"- Address filter: `{summary.get('address_min')}`-`{summary.get('address_max')}`")
+    auto_range = summary.get("auto_address_range") or {}
+    if auto_range and auto_range.get("status") == "ok":
+        lines.append(f"- Auto address range: `{auto_range.get('address_min')}`-`{auto_range.get('address_max')}` ({auto_range.get('source')})")
+    elif auto_range and auto_range.get("status") == "unsupported":
+        lines.append(f"- Auto address range: unavailable ({auto_range.get('reason')})")
     if summary.get("total_log_bytes") is not None:
         lines.append(f"- Total log bytes: {summary.get('total_log_bytes')}")
     if summary.get("metadata_path"):
@@ -1026,6 +1072,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         return _tool_result(result)
 
     if name == "metadata_from_address_log":
+        detected_range = _maybe_auto_address_range(arguments, "input_path")
         coverage = _load_many_address_logs(arguments)
         metadata = build_trace_metadata(
             coverage,
@@ -1041,6 +1088,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 "events": len(coverage.blocks),
                 "functions": len(metadata.functions),
                 "basic_blocks": sum(len(function.blocks) for function in metadata.functions),
+                "auto_address_range": _auto_address_range_summary(detected_range),
             }
         )
 
@@ -1244,14 +1292,7 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         for func in metadata.functions:
             for block in func.blocks:
                 if block.start == addr:
-                    result = {
-                        "function": func.name,
-                        "function_start": _hex_addr(func.start),
-                        "block_start": _hex_addr(block.start),
-                        "block_end": _hex_addr(block.end),
-                        "successors": [_hex_addr(s) for s in block.succs],
-                        "context": block.context.to_json(),
-                    }
+                    result = build_block_context_report(func, block)
                     return _tool_result(result)
         raise ValueError(f"Block at {_hex_addr(addr)} not found in metadata")
 

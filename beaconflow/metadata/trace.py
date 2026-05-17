@@ -20,6 +20,11 @@ def build_trace_metadata(
     """
 
     addresses = [block.absolute_start for block in coverage.blocks if block.absolute_start is not None]
+    size_by_address = {
+        block.absolute_start: block.size
+        for block in coverage.blocks
+        if block.absolute_start is not None
+    }
     unique_addresses = sorted(set(addresses))
     if not unique_addresses:
         return ProgramMetadata(input_path=input_path, image_base=image_base, functions=())
@@ -34,10 +39,14 @@ def build_trace_metadata(
     ranges.append((start, previous))
 
     function_by_address: dict[int, int] = {}
-    for index, (range_start, range_end) in enumerate(ranges):
-        for address in unique_addresses:
-            if range_start <= address <= range_end:
-                function_by_address[address] = index
+    addresses_by_region: list[list[int]] = [[] for _ in ranges]
+    region_index = 0
+    for address in unique_addresses:
+        while region_index + 1 < len(ranges) and address > ranges[region_index][1]:
+            region_index += 1
+        if ranges[region_index][0] <= address <= ranges[region_index][1]:
+            function_by_address[address] = region_index
+            addresses_by_region[region_index].append(address)
 
     succs: dict[int, set[int]] = defaultdict(set)
     previous_address: int | None = None
@@ -51,11 +60,11 @@ def build_trace_metadata(
 
     functions: list[Function] = []
     for index, (range_start, range_end) in enumerate(ranges):
-        region_addresses = [address for address in unique_addresses if range_start <= address <= range_end]
+        region_addresses = addresses_by_region[index]
         blocks = tuple(
             BasicBlock(
                 start=address,
-                end=address + _observed_size(coverage, address),
+                end=address + size_by_address.get(address, 4),
                 succs=tuple(sorted(succs.get(address, ()))),
             )
             for address in region_addresses
@@ -70,10 +79,3 @@ def build_trace_metadata(
         )
 
     return ProgramMetadata(input_path=input_path, image_base=image_base, functions=tuple(functions))
-
-
-def _observed_size(coverage: CoverageData, address: int) -> int:
-    for block in coverage.blocks:
-        if block.absolute_start == address:
-            return block.size
-    return 4
