@@ -29,27 +29,38 @@ def _append_block_context(lines: list[str], item: dict[str, Any], key: str = "bl
 
 def _ai_digest_lines(result: dict[str, Any]) -> list[str]:
     digest = result.get("ai_digest")
-    if not digest:
+    confidence = result.get("report_confidence")
+    if not digest and not confidence:
         return []
-    lines = [
-        "## AI Digest",
-        "",
-        f"- Task: {digest.get('task', '<unknown>')}",
-        f"- Confidence: {digest.get('confidence', '<unknown>')}",
-    ]
-    if digest.get("warnings"):
-        lines.append(f"- Warnings: {len(digest.get('warnings', []))}")
-    findings = digest.get("top_findings", [])
-    if findings:
-        lines.extend(["", "### Top Findings"])
-        for item in findings[:5]:
-            lines.append(f"- `{item.get('evidence_id')}` {item.get('claim')} confidence={item.get('confidence')}")
-    actions = digest.get("recommended_actions", [])
-    if actions:
-        lines.extend(["", "### Recommended Actions"])
-        for item in actions[:5]:
-            address = f" at `{item.get('address')}`" if item.get("address") else ""
-            lines.append(f"- P{item.get('priority')}: {item.get('kind')}{address} - {item.get('reason')}")
+    lines = ["## AI Digest", ""]
+    if digest:
+        lines.extend([
+            f"- Task: {digest.get('task', '<unknown>')}",
+            f"- Confidence: {digest.get('confidence', '<unknown>')}",
+        ])
+        if digest.get("warnings"):
+            lines.append(f"- Warnings: {len(digest.get('warnings', []))}")
+    if confidence:
+        lines.extend([
+            f"- Report confidence: {confidence.get('level')} ({confidence.get('score')}/100)",
+            f"- Recommendation: {confidence.get('recommendation')}",
+        ])
+        if confidence.get("limitations"):
+            lines.extend(["", "### Confidence Limitations"])
+            for item in confidence.get("limitations", [])[:5]:
+                lines.append(f"- {item}")
+    if digest:
+        findings = digest.get("top_findings", [])
+        if findings:
+            lines.extend(["", "### Top Findings"])
+            for item in findings[:5]:
+                lines.append(f"- `{item.get('evidence_id')}` {item.get('claim')} confidence={item.get('confidence')}")
+        actions = digest.get("recommended_actions", [])
+        if actions:
+            lines.extend(["", "### Recommended Actions"])
+            for item in actions[:5]:
+                address = f" at `{item.get('address')}`" if item.get("address") else ""
+                lines.append(f"- P{item.get('priority')}: {item.get('kind')}{address} - {item.get('reason')}")
     lines.append("")
     return lines
 

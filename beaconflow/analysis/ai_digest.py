@@ -5,6 +5,7 @@ from typing import Any
 
 def attach_ai_digest(kind: str, result: dict[str, Any], *, max_findings: int = 5) -> dict[str, Any]:
     result["data_quality"] = _data_quality(result)
+    result["report_confidence"] = build_report_confidence(kind, result)
     result["ai_digest"] = build_ai_digest(kind, result, max_findings=max_findings)
     return result
 
@@ -32,7 +33,86 @@ def compact_report(kind: str, result: dict[str, Any], *, max_findings: int = 5) 
             "right_summary": result.get("right_summary"),
         },
         "data_quality": result.get("data_quality") or _data_quality(result),
+        "report_confidence": result.get("report_confidence") or build_report_confidence(kind, result),
         "ai_digest": digest,
+    }
+
+
+def build_report_confidence(kind: str, result: dict[str, Any]) -> dict[str, Any]:
+    """Return a structured confidence assessment for AI consumers.
+
+    This is intentionally explicit: reports can be useful even when they are
+    heuristic, but downstream agents should see why a conclusion is strong or
+    weak before treating it as a fact.
+    """
+    warnings = _warnings(result)
+    quality = result.get("data_quality") or _data_quality(result)
+    precision = str(quality.get("hit_count_precision") or "unknown")
+    mapping_ratio = quality.get("mapping_ratio")
+    score = 100
+    basis: list[str] = []
+    limitations: list[str] = []
+
+    if warnings:
+        score -= min(35, 10 + 5 * len(warnings))
+        limitations.extend(warnings)
+    if "translation-log" in precision:
+        score -= 20
+        limitations.append("QEMU in_asm trace is a translation log; hit counts are not exact execution counts.")
+    elif precision == "coverage-table":
+        basis.append("DynamoRIO drcov coverage table provides reliable block coverage, but not register or memory values.")
+    elif precision == "exact":
+        basis.append("Trace mode reports exact execution events for hit-count style reasoning.")
+    else:
+        score -= 10
+        limitations.append("Hit-count precision is unknown.")
+
+    if isinstance(mapping_ratio, float):
+        if mapping_ratio >= 0.9:
+            basis.append(f"High mapping ratio: {mapping_ratio:.2%}.")
+        elif mapping_ratio >= 0.75:
+            score -= 10
+            basis.append(f"Usable mapping ratio: {mapping_ratio:.2%}.")
+        elif mapping_ratio >= 0.4:
+            score -= 25
+            limitations.append(f"Low mapping ratio: {mapping_ratio:.2%}.")
+        else:
+            score -= 40
+            limitations.append(f"Very low mapping ratio: {mapping_ratio:.2%}.")
+    else:
+        if kind not in {"coverage", "flow", "flow_diff"}:
+            score -= 5
+            limitations.append("Mapping ratio is not available for this report type.")
+
+    heuristic_kinds = {"deflatten", "deflatten_merge", "recover_state", "branch_rank", "qemu_explore"}
+    if kind in heuristic_kinds:
+        score -= 10
+        limitations.append(f"{kind} uses heuristic ranking; inspect evidence before treating candidates as facts.")
+
+    if kind in {"trace_compare", "trace_values", "input_taint", "feedback_explore"}:
+        score -= 15
+        limitations.append(f"{kind} infers value/taint relationships from available metadata and traces.")
+
+    score = max(0, min(100, score))
+    if score >= 85:
+        level = "high"
+    elif score >= 60:
+        level = "medium"
+    else:
+        level = "low"
+
+    recommendation = "Use directly for next-step triage."
+    if level == "medium":
+        recommendation = "Use for prioritization, then confirm important claims in disassembly or with a richer trace."
+    elif level == "low":
+        recommendation = "Treat as exploratory only; recollect traces or improve metadata before relying on conclusions."
+
+    return {
+        "level": level,
+        "score": score,
+        "basis": list(dict.fromkeys(basis)),
+        "limitations": list(dict.fromkeys(limitations)),
+        "recommendation": recommendation,
     }
 
 

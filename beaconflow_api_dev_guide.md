@@ -432,6 +432,7 @@ print(res["content"][0]["text"])
 - 如果 `tools/call` 返回 JSON-RPC `error`，视为协议或未捕获异常。
 - 如果 `result.content[0].text` 是 `# Error` 或包含 `{"status":"error"}`，视为业务失败。
 - 对 `check_update` 的网络失败只做 warning，不阻塞主流程。
+- 优先读取 `report_confidence`。`level=medium/low` 时只能把报告当作 triage 排序，关键结论必须回到反汇编、伪代码或更强 trace 交叉验证。
 - 对 QEMU `in_asm` 报告，必须检查 `data_quality.hit_count_precision`；值为 `translation-log` 时，不要把 hit count 当精确循环次数。
 - 对大型 address log，先传 `address_min/address_max`，再做 `qemu_explore`、`metadata_from_address_log`、`diff_flow`。
 - 对 Frida 工具，零事件不一定是失败，可能是目标没调用被 hook 函数、地址不对或进程过快退出。

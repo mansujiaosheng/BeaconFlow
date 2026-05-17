@@ -171,6 +171,18 @@ python -m beaconflow.cli quickstart-flatten `
 
 输出目录会包含 deflatten JSON/Markdown 和 `quickstart-flatten.md` 索引。
 
+## 报告置信度
+
+带 AI Digest 的报告会同时输出 `report_confidence`：
+
+- `level`：`high` / `medium` / `low`
+- `score`：0-100
+- `basis`：支持当前置信度的证据，例如高 mapping ratio、可靠覆盖率来源
+- `limitations`：限制条件，例如 QEMU `in_asm` 只代表 translation log、deflatten/branch-rank 属于启发式排序
+- `recommendation`：Agent 下一步该如何使用该报告
+
+规则上，DynamoRIO drcov + 高映射率通常是高置信；QEMU `in_asm`、反平坦化、分支排序、taint/value 推断会自动降级，防止 AI 把启发式结论当成事实。
+
 ***
 
 ## 工作流 A：IDA + DynamoRIO

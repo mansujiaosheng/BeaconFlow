@@ -237,6 +237,7 @@ When using QEMU `in_asm`, do not use hit counts as a decisive dispatcher signal.
 
 ## Interpretation Rules
 
+- Always read `report_confidence` when present. `high` means the report can drive the next action; `medium` means use it for prioritization and confirm important claims; `low` means exploratory only.
 - First read top-level `ai_digest` and `data_quality` before scanning long lists. `ai_digest.top_findings` gives the highest-value evidence, `recommended_actions` gives machine-actionable next steps, and `data_quality.hit_count_precision` tells whether hit counts are reliable.
 - Use `ai-summary` / `ai_summary` on large saved JSON reports before loading the full report into context.
 - BeaconFlow preserves the drcov BB Table order (or QEMU address log order) to recover the observed basic-block flow for one run.
