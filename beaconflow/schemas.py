@@ -860,7 +860,7 @@ SIG_MATCH_SCHEMA: dict[str, Any] = {
                     "category": {"type": "string"},
                     "name": {"type": "string"},
                     "confidence": {"type": "string"},
-                    "evidence": {"type": "string"},
+                    "evidence": {"type": ["string", "array"]},
                     "address": {"type": ["string", "null"]},
                     "function": {"type": ["string", "null"]},
                 },
@@ -1256,4 +1256,162 @@ def validate_report_strict(report: dict[str, Any], schema_name: str) -> dict[str
         "valid": is_valid,
         "error_count": len(errors),
         "errors": errors,
+    }
+
+
+_SCHEMA_NAME_HINTS: dict[str, list[str]] = {
+    "coverage": ["coverage", "cov"],
+    "coverage_diff": ["coverage_diff", "cov_diff"],
+    "flow": ["flow"],
+    "flow_diff": ["flow_diff"],
+    "deflatten": ["deflatten", "deflat"],
+    "deflatten_merge": ["deflatten_merge", "deflat_merge"],
+    "recover_state": ["recover_state", "state_trans"],
+    "branch_rank": ["branch_rank"],
+    "decision_points": ["decision_points", "dp_"],
+    "roles": ["roles"],
+    "value_trace": ["value_trace"],
+    "trace_compare": ["trace_compare"],
+    "input_taint": ["input_taint"],
+    "feedback_explore": ["feedback_explore"],
+    "sig_match": ["sig_match"],
+    "decompile_function": ["decompile"],
+    "normalize_ir": ["normalize_ir", "ir_"],
+    "qemu_explore": ["qemu_explore"],
+    "block_context": ["block_context", "inspect_block"],
+}
+
+
+def _guess_schema_name(filename: str) -> str | None:
+    """根据文件名猜测最可能的 schema 名称。"""
+    lower = filename.lower()
+    best: str | None = None
+    best_len = 0
+    for schema_name, hints in _SCHEMA_NAME_HINTS.items():
+        for hint in hints:
+            if hint in lower and len(hint) > best_len:
+                best = schema_name
+                best_len = len(hint)
+    return best
+
+
+def validate_all_reports(
+    directory: str | Path,
+    recursive: bool = True,
+) -> dict[str, Any]:
+    """批量验证目录下所有 JSON 报告文件是否符合 schema。
+
+    参数:
+        directory: 要扫描的目录路径
+        recursive: 是否递归扫描子目录
+
+    返回:
+        包含每个文件验证结果的汇总字典
+    """
+    import json as _json
+    from pathlib import Path as _Path
+
+    dir_path = _Path(directory).resolve()
+    if not dir_path.exists():
+        return {
+            "status": "error",
+            "message": f"目录不存在: {dir_path}",
+            "results": [],
+        }
+
+    pattern = "**/*.json" if recursive else "*.json"
+    json_files = sorted(dir_path.glob(pattern))
+
+    results: list[dict[str, Any]] = []
+    for jf in json_files:
+        # 跳过 manifest.json 等非报告文件
+        if jf.name in ("manifest.json", "package.json", "tsconfig.json"):
+            continue
+
+        try:
+            data = _json.loads(jf.read_text(encoding="utf-8"))
+        except (_json.JSONDecodeError, OSError) as e:
+            results.append({
+                "path": str(jf),
+                "filename": jf.name,
+                "schema_name": None,
+                "valid": False,
+                "error_count": 1,
+                "errors": [f"无法解析 JSON: {e}"],
+            })
+            continue
+
+        if not isinstance(data, dict):
+            continue
+
+        # 猜测 schema 名称
+        guessed = _guess_schema_name(jf.name)
+        if guessed is None:
+            # 尝试根据报告内容推断
+            if "flow" in data and "summary" in data:
+                guessed = "flow"
+            elif "covered_functions" in data and "uncovered_functions" in data:
+                guessed = "coverage"
+            elif "decision_points" in data:
+                guessed = "decision_points"
+            elif "candidates" in data and "summary" in data:
+                guessed = "roles"
+            elif "matches" in data and "summary" in data:
+                guessed = "sig_match"
+            elif "ranked_branches" in data:
+                guessed = "branch_rank"
+            elif "dispatcher_blocks" in data and "real_edges" in data:
+                guessed = "deflatten"
+            elif "compare_events" in data:
+                guessed = "value_trace"
+            elif "compares" in data and "summary" in data:
+                guessed = "trace_compare"
+
+        if guessed is None:
+            results.append({
+                "path": str(jf),
+                "filename": jf.name,
+                "schema_name": None,
+                "valid": None,
+                "error_count": 0,
+                "errors": [],
+                "note": "无法自动匹配 schema，跳过验证",
+            })
+            continue
+
+        if guessed not in SCHEMAS:
+            results.append({
+                "path": str(jf),
+                "filename": jf.name,
+                "schema_name": guessed,
+                "valid": None,
+                "error_count": 0,
+                "errors": [],
+                "note": f"猜测的 schema '{guessed}' 不存在，跳过",
+            })
+            continue
+
+        validation = validate_report_strict(data, guessed)
+        results.append({
+            "path": str(jf),
+            "filename": jf.name,
+            "schema_name": guessed,
+            "valid": validation["valid"],
+            "error_count": validation["error_count"],
+            "errors": validation["errors"],
+        })
+
+    total = len(results)
+    valid_count = sum(1 for r in results if r["valid"] is True)
+    invalid_count = sum(1 for r in results if r["valid"] is False)
+    skipped_count = sum(1 for r in results if r["valid"] is None)
+
+    return {
+        "status": "ok",
+        "directory": str(dir_path),
+        "total_files": total,
+        "valid": valid_count,
+        "invalid": invalid_count,
+        "skipped": skipped_count,
+        "results": results,
     }

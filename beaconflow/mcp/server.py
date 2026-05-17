@@ -16,7 +16,7 @@ from beaconflow.ghidra import export_ghidra_metadata, find_ghidra_headless
 from beaconflow.ida import load_metadata, save_metadata
 from beaconflow.metadata import build_trace_metadata
 from beaconflow.reports import branch_rank_to_markdown, coverage_to_markdown, decision_points_to_markdown, deflatten_merge_to_markdown, deflatten_to_markdown, feedback_explore_to_markdown, flow_diff_to_markdown, flow_to_markdown, input_taint_to_markdown, roles_to_markdown, state_transitions_to_markdown, trace_compare_to_markdown, value_trace_to_markdown
-from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws_add_note, add_report as ws_add_report, add_run as ws_add_run, case_to_markdown, destroy_case, init_case, list_notes, list_reports, list_runs, load_manifest, summarize_case
+from beaconflow.workspace import add_metadata as ws_add_metadata, add_note as ws_add_note, add_report as ws_add_report, add_run as ws_add_run, case_check as ws_case_check, case_to_markdown, destroy_case, init_case, list_notes, list_reports, list_runs, load_manifest, summarize_case
 from beaconflow.wasm_parser import analyze_wasm, wasm_to_metadata
 from beaconflow.runtime.trace_calls import trace_calls, trace_calls_to_markdown
 from beaconflow.runtime.trace_compare import trace_compare, trace_compare_to_markdown
@@ -743,12 +743,13 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "suggest_hook": {
-        "description": "[basic] Suggest Frida hook templates based on analysis findings. Generates ready-to-use hook scripts for common patterns (strcmp, memcmp, crypto, etc.).",
+        "description": "[basic] Suggest Frida hook templates based on analysis findings. Generates ready-to-use hook scripts for common patterns (strcmp, memcmp, crypto, etc.). Supports Android APK analysis with apk_summary.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "metadata_path": {"type": "string", "description": "Path to metadata JSON for context-aware suggestions."},
                 "target_type": {"type": "string", "description": "Target type hint (e.g. 'android', 'native', 'wasm')."},
+                "apk_summary_path": {"type": "string", "description": "Path to APK summary JSON from triage-apk, for Android hook suggestions."},
                 "format": {"type": "string", "enum": ["json", "markdown"], "default": "markdown"},
             },
         },
@@ -847,6 +848,26 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "kind": {"type": "string", "description": "Report kind hint (coverage, flow, decision_points, etc.)."},
             },
             "required": ["report_path"],
+        },
+    },
+    "schema_validate_all": {
+        "description": "[advanced] Validate all JSON reports in a directory against auto-detected schemas. Useful for batch quality checking of analysis results.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "directory": {"type": "string", "description": "Directory containing JSON report files to validate."},
+                "recursive": {"type": "boolean", "default": True, "description": "Recursively scan subdirectories."},
+            },
+            "required": ["directory"],
+        },
+    },
+    "case_check": {
+        "description": "[advanced] Comprehensive quality check for a case workspace. Checks metadata, runs, reports, ai_digest, evidence_id, confidence, artifact paths, large files, schema compliance, and next_actions.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "root": {"type": "string", "description": "Case workspace root directory (default: current directory)."},
+            },
         },
     },
     "to_html": {
@@ -1876,9 +1897,16 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
                 metadata = load_metadata(arguments["metadata_path"])
             except Exception:
                 pass
+        apk_summary = None
+        if arguments.get("apk_summary_path"):
+            try:
+                apk_summary = json.loads(Path(arguments["apk_summary_path"]).read_text(encoding="utf-8"))
+            except Exception:
+                pass
         result = suggest_hook(
             metadata=metadata,
             target_type=arguments.get("target_type"),
+            apk_summary=apk_summary,
         )
         return _tool_result(result)
 
@@ -1947,6 +1975,18 @@ def _call_tool(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         report_data = json.loads(Path(arguments["report_path"]).read_text(encoding="utf-8"))
         kind = arguments.get("kind") or infer_report_kind(report_data)
         result = validate_report_strict(kind, report_data)
+        return _tool_result(result)
+
+    if name == "schema_validate_all":
+        from beaconflow.schemas import validate_all_reports
+        result = validate_all_reports(
+            directory=arguments["directory"],
+            recursive=arguments.get("recursive", True),
+        )
+        return _tool_result(result)
+
+    if name == "case_check":
+        result = ws_case_check(root=arguments.get("root"))
         return _tool_result(result)
 
     if name == "to_html":
@@ -2170,6 +2210,8 @@ TOOL_TIERS: dict[str, dict[str, str]] = {
     "decompile_function": {"tier": "advanced", "when_to_use": "生成伪代码摘要时使用"},
     "ai_summary": {"tier": "advanced", "when_to_use": "压缩报告为 AI digest 时使用"},
     "schema_validate": {"tier": "advanced", "when_to_use": "验证报告 schema 时使用"},
+    "schema_validate_all": {"tier": "advanced", "when_to_use": "批量验证目录下所有报告 schema 时使用"},
+    "case_check": {"tier": "advanced", "when_to_use": "检查 case 工作区质量时使用"},
     "to_html": {"tier": "advanced", "when_to_use": "将报告转为 HTML 时使用"},
     "trace_calls": {"tier": "advanced", "when_to_use": "运行时函数调用追踪时使用"},
     "trace_compare": {"tier": "advanced", "when_to_use": "运行时比较指令追踪时使用"},
