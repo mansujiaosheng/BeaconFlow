@@ -447,3 +447,20 @@ print(res["content"][0]["text"])
 6. 对可疑函数跑 `inspect_function`、`find_decision_points`、`analyze_compare`、`normalize_ir`、`sig_match`。
 7. 对平坦化目标跑 `deflatten_flow`、`deflatten_merge`、`recover_state_transitions`。
 8. 用 `init_case` / `add_note_to_case` 持久化中间证据。
+
+## 12. 开发与 CI
+
+提交前至少运行：
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+python -m beaconflow.cli --help
+python tests\smoke_beaconflow.py
+```
+
+CI 在 `.github/workflows/ci.yml` 中定义：
+
+- Ubuntu/Windows x Python 3.10/3.12：安装 `.[mcp]`、`compileall`、单元测试、CLI help。
+- Windows smoke：安装 MinGW，运行 `tests\smoke_beaconflow.py`，覆盖 PE 生成、DynamoRIO drcov、coverage/flow 分析。
+
+新增 MCP 工具或报告字段时，同步更新 `TOOLS` schema、CLI parser、README/API 文档，并在 `tests/test_core.py` 增加 schema 或 report shape 断言。

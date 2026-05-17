@@ -182,6 +182,21 @@ python -m beaconflow.cli quickstart-flatten `
 
 规则上，DynamoRIO drcov + 高映射率通常是高置信；QEMU `in_asm`、反平坦化、分支排序、taint/value 推断会自动降级，防止 AI 把启发式结论当成事实。
 
+## CI 与测试矩阵
+
+仓库包含 GitHub Actions 工作流 `.github/workflows/ci.yml`：
+
+- `unit`：在 Ubuntu/Windows、Python 3.10/3.12 上安装 `.[mcp]`，编译 `beaconflow` 与 `tests`，运行 `python -m unittest discover -s tests -p "test_*.py"`，并验证 CLI 入口。
+- `smoke-windows`：在 Windows + Python 3.12 下安装 MinGW，运行 `tests\smoke_beaconflow.py`，覆盖 PE 编译、DynamoRIO drcov 采集、coverage/flow 分析。
+
+本地快速验证：
+
+```powershell
+python -m unittest discover -s tests -p "test_*.py"
+python -m beaconflow.cli --help
+python tests\smoke_beaconflow.py
+```
+
 ***
 
 ## 工作流 A：IDA + DynamoRIO

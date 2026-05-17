@@ -211,6 +211,7 @@ When IDA does not support the target architecture (e.g., LoongArch), or you pref
   - `D:\CTF\ISCC2026\qu\re3-lei\box.wasm` for WASM metadata, WASM triage, normalized IR, signature matching, roles, and pseudo-code.
 - MCP static compare analysis is named `analyze_compare`; runtime Frida compare tracing is named `trace_compare`.
 - MCP `branch_rank` expects a baseline `bad_coverage_path` or `bad_address_log_path`, plus optional `better_*` / `good_*` traces. Do not pass generic `coverage_paths` to this tool.
+- CI lives in `.github/workflows/ci.yml`: unit tests run on Ubuntu/Windows with Python 3.10/3.12, and Windows smoke covers PE generation, DynamoRIO drcov, coverage, and flow.
 
 ## Key Parameters
 

@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit:
+    name: unit (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install package
+        run: python -m pip install -e ".[mcp]"
+      - name: Compile Python modules
+        run: python -m compileall -q beaconflow tests
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Check CLI entry point
+        run: python -m beaconflow.cli --help
+
+  smoke-windows:
+    name: smoke (windows, drcov)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: msys2/setup-msys2@v2
+        with:
+          update: false
+          install: mingw-w64-x86_64-gcc
+      - name: Add MinGW to PATH
+        shell: pwsh
+        run: Add-Content -Path $env:GITHUB_PATH -Value "C:\msys64\mingw64\bin"
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Run BeaconFlow smoke
+        run: python tests\smoke_beaconflow.py

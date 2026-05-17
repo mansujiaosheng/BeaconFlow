@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -147,6 +149,10 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(result["ai_digest"]["recommended_actions"][0]["kind"], "open_disassembly")
         self.assertEqual(result["ranked_branches"][0]["block"], "check:0x1000")
         self.assertGreaterEqual(result["ranked_branches"][0]["new_successors_vs_baseline"], 1)
+        confidence = result["report_confidence"]
+        self.assertIn(confidence["level"], {"high", "medium", "low"})
+        self.assertIsInstance(confidence["score"], int)
+        self.assertTrue(confidence["recommendation"])
 
     def test_strict_dispatcher_mode_does_not_remove_hot_loop(self) -> None:
         metadata = _loop_metadata()
@@ -258,6 +264,23 @@ class McpTests(unittest.TestCase):
         for name in ["analyze_flow", "diff_flow", "qemu_explore", "branch_rank", "recover_state_transitions", "ai_summary"]:
             self.assertIn(name, TOOLS)
             self.assertIn("inputSchema", TOOLS[name])
+
+    def test_qemu_explore_schema_exposes_auto_address_range(self) -> None:
+        props = TOOLS["qemu_explore"]["inputSchema"]["properties"]
+        self.assertIn("auto_address_range", props)
+        self.assertEqual(props["auto_address_range"]["default"], True)
+
+
+class CliTests(unittest.TestCase):
+    def test_cli_help_lists_quickstart_and_qemu_commands(self) -> None:
+        completed = subprocess.run(
+            [sys.executable, "-m", "beaconflow.cli", "--help"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertIn("quickstart-qemu", completed.stdout)
+        self.assertIn("qemu-explore", completed.stdout)
 
 
 if __name__ == "__main__":
