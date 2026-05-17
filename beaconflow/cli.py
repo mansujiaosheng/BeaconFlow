@@ -27,6 +27,9 @@ from beaconflow.analysis.input_impact import input_impact, input_impact_to_markd
 from beaconflow.export_annotations import export_annotations
 from beaconflow.fuzz_corpus import corpus_init, corpus_minimize, corpus_from_reports, generate_afl_harness, import_fuzz_results
 from beaconflow.dynamorio_custom import generate_client_template, run_custom_client, import_custom_trace
+from beaconflow.templates import suggest_hook, suggest_angr, suggest_debug, generate_template, list_templates
+from beaconflow.importers import import_frida_log, import_gdb_log, import_angr_result, import_jadx_summary
+from beaconflow.triage import triage_native, triage_qemu, triage_wasm
 
 
 def _fmt_markdown(fmt_choice: str, md_func, result, **kwargs) -> str:
@@ -1390,6 +1393,143 @@ def _cmd_dr_import_trace(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_suggest_hook(args: argparse.Namespace) -> int:
+    dp_result = json.loads(Path(args.decision_points).read_text(encoding="utf-8")) if args.decision_points else None
+    roles_result = json.loads(Path(args.roles).read_text(encoding="utf-8")) if args.roles else None
+    tc_result = json.loads(Path(args.trace_compare).read_text(encoding="utf-8")) if args.trace_compare else None
+    result = suggest_hook(
+        decision_points_result=dp_result,
+        roles_result=roles_result,
+        trace_compare_result=tc_result,
+        target_type=args.target_type,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_suggest_angr(args: argparse.Namespace) -> int:
+    fd_result = json.loads(Path(args.flow_diff).read_text(encoding="utf-8")) if args.flow_diff else None
+    roles_result = json.loads(Path(args.roles).read_text(encoding="utf-8")) if args.roles else None
+    dp_result = json.loads(Path(args.decision_points).read_text(encoding="utf-8")) if args.decision_points else None
+    br_result = json.loads(Path(args.branch_rank).read_text(encoding="utf-8")) if args.branch_rank else None
+    result = suggest_angr(
+        flow_diff_result=fd_result,
+        roles_result=roles_result,
+        decision_points_result=dp_result,
+        branch_rank_result=br_result,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_suggest_debug(args: argparse.Namespace) -> int:
+    dp_result = json.loads(Path(args.decision_points).read_text(encoding="utf-8")) if args.decision_points else None
+    roles_result = json.loads(Path(args.roles).read_text(encoding="utf-8")) if args.roles else None
+    tc_result = json.loads(Path(args.trace_compare).read_text(encoding="utf-8")) if args.trace_compare else None
+    result = suggest_debug(
+        decision_points_result=dp_result,
+        roles_result=roles_result,
+        trace_compare_result=tc_result,
+        debugger=args.debugger,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    if args.output:
+        Path(args.output).write_text(result.get("script_content", ""), encoding="utf-8")
+    return 0
+
+
+def _cmd_generate_template(args: argparse.Namespace) -> int:
+    params = {}
+    if args.params:
+        for p in args.params:
+            if "=" in p:
+                k, v = p.split("=", 1)
+                params[k] = v
+    result = generate_template(
+        template_name=args.template_name,
+        output_path=args.output,
+        params=params,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_list_templates(args: argparse.Namespace) -> int:
+    result = list_templates(category=args.category)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_import_frida(args: argparse.Namespace) -> int:
+    result = import_frida_log(
+        log_path=args.log,
+        metadata_path=args.metadata,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_import_gdb(args: argparse.Namespace) -> int:
+    result = import_gdb_log(
+        log_path=args.log,
+        metadata_path=args.metadata,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_import_angr(args: argparse.Namespace) -> int:
+    result = import_angr_result(
+        result_path=args.result,
+        metadata_path=args.metadata,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_import_jadx(args: argparse.Namespace) -> int:
+    result = import_jadx_summary(
+        summary_path=args.summary,
+        metadata_path=args.metadata,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_triage_native(args: argparse.Namespace) -> int:
+    result = triage_native(
+        target_path=args.target,
+        output_dir=args.output_dir,
+        stdin=args.stdin,
+        target_args=args.target_args,
+        arch=args.arch,
+        timeout=args.timeout,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("status") == "ok" else 1
+
+
+def _cmd_triage_qemu(args: argparse.Namespace) -> int:
+    result = triage_qemu(
+        target_path=args.target,
+        output_dir=args.output_dir,
+        qemu_arch=args.qemu_arch,
+        stdin_cases=args.stdin_cases,
+        timeout=args.timeout,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("status") == "ok" else 1
+
+
+def _cmd_triage_wasm(args: argparse.Namespace) -> int:
+    result = triage_wasm(
+        target_path=args.target,
+        output_dir=args.output_dir,
+    )
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result.get("status") == "ok" else 1
+
+
 def _cmd_quickstart_pe(args: argparse.Namespace) -> int:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1967,6 +2107,80 @@ def build_parser() -> argparse.ArgumentParser:
     dr_import.add_argument("--trace-type", choices=("compare_trace", "memory_trace", "call_trace", "register_trace"), default="compare_trace", help="Type of trace log.")
     dr_import.add_argument("--metadata", help="IDA/Ghidra metadata JSON for correlation.")
     dr_import.set_defaults(func=_cmd_dr_import_trace)
+
+    suggest_hook_p = sub.add_parser("suggest-hook", help="Recommend Frida hook templates based on analysis evidence.")
+    suggest_hook_p.add_argument("--decision-points", help="Decision points report JSON.")
+    suggest_hook_p.add_argument("--roles", help="Roles report JSON.")
+    suggest_hook_p.add_argument("--trace-compare", help="Trace compare report JSON.")
+    suggest_hook_p.add_argument("--target-type", choices=("native", "android"), default="native", help="Target platform type.")
+    suggest_hook_p.set_defaults(func=_cmd_suggest_hook)
+
+    suggest_angr_p = sub.add_parser("suggest-angr", help="Recommend angr find/avoid addresses based on analysis evidence.")
+    suggest_angr_p.add_argument("--flow-diff", help="Flow diff report JSON.")
+    suggest_angr_p.add_argument("--roles", help="Roles report JSON.")
+    suggest_angr_p.add_argument("--decision-points", help="Decision points report JSON.")
+    suggest_angr_p.add_argument("--branch-rank", help="Branch rank report JSON.")
+    suggest_angr_p.set_defaults(func=_cmd_suggest_angr)
+
+    suggest_debug_p = sub.add_parser("suggest-debug", help="Recommend GDB/x64dbg breakpoint script based on decision points.")
+    suggest_debug_p.add_argument("--decision-points", help="Decision points report JSON.")
+    suggest_debug_p.add_argument("--roles", help="Roles report JSON.")
+    suggest_debug_p.add_argument("--trace-compare", help="Trace compare report JSON.")
+    suggest_debug_p.add_argument("--debugger", choices=("gdb", "x64dbg"), default="gdb", help="Debugger type.")
+    suggest_debug_p.add_argument("--output", help="Output script file path.")
+    suggest_debug_p.set_defaults(func=_cmd_suggest_debug)
+
+    gen_tmpl_p = sub.add_parser("generate-template", help="Generate a hook/solve/debug template with parameters.")
+    gen_tmpl_p.add_argument("--template-name", required=True, help="Template name (use list-templates to see available).")
+    gen_tmpl_p.add_argument("--output", required=True, help="Output file path.")
+    gen_tmpl_p.add_argument("--params", nargs="*", help="Key=value parameters to fill in template.")
+    gen_tmpl_p.set_defaults(func=_cmd_generate_template)
+
+    list_tmpl_p = sub.add_parser("list-templates", help="List all available templates.")
+    list_tmpl_p.add_argument("--category", help="Filter by category.")
+    list_tmpl_p.set_defaults(func=_cmd_list_templates)
+
+    import_frida_p = sub.add_parser("import-frida-log", help="Import Frida hook output log.")
+    import_frida_p.add_argument("--log", required=True, help="Frida log file path.")
+    import_frida_p.add_argument("--metadata", help="IDA/Ghidra metadata JSON for correlation.")
+    import_frida_p.set_defaults(func=_cmd_import_frida)
+
+    import_gdb_p = sub.add_parser("import-gdb-log", help="Import GDB debug log.")
+    import_gdb_p.add_argument("--log", required=True, help="GDB log file path.")
+    import_gdb_p.add_argument("--metadata", help="IDA/Ghidra metadata JSON for correlation.")
+    import_gdb_p.set_defaults(func=_cmd_import_gdb)
+
+    import_angr_p = sub.add_parser("import-angr-result", help="Import angr solving result.")
+    import_angr_p.add_argument("--result", required=True, help="angr result file path (JSON or text).")
+    import_angr_p.add_argument("--metadata", help="IDA/Ghidra metadata JSON for correlation.")
+    import_angr_p.set_defaults(func=_cmd_import_angr)
+
+    import_jadx_p = sub.add_parser("import-jadx-summary", help="Import JADX decompilation summary.")
+    import_jadx_p.add_argument("--summary", required=True, help="JADX summary JSON file path.")
+    import_jadx_p.add_argument("--metadata", help="IDA/Ghidra metadata JSON for correlation.")
+    import_jadx_p.set_defaults(func=_cmd_import_jadx)
+
+    triage_native_p = sub.add_parser("triage-native", help="One-command native PE/ELF triage workflow.")
+    triage_native_p.add_argument("--target", required=True, help="Target PE/ELF binary.")
+    triage_native_p.add_argument("--output-dir", required=True, help="Output directory for all reports.")
+    triage_native_p.add_argument("--stdin", help="Stdin input for target.")
+    triage_native_p.add_argument("--target-args", nargs="*", help="Arguments to pass to target.")
+    triage_native_p.add_argument("--arch", choices=("x86", "x64"), default="x64")
+    triage_native_p.add_argument("--timeout", type=int, default=120, help="Per-step timeout in seconds.")
+    triage_native_p.set_defaults(func=_cmd_triage_native)
+
+    triage_qemu_p = sub.add_parser("triage-qemu", help="One-command QEMU triage workflow for cross-arch binaries.")
+    triage_qemu_p.add_argument("--target", required=True, help="Target ELF binary.")
+    triage_qemu_p.add_argument("--output-dir", required=True, help="Output directory for all reports.")
+    triage_qemu_p.add_argument("--qemu-arch", default="arm", help="QEMU user arch (arm, aarch64, mips, loongarch64, etc).")
+    triage_qemu_p.add_argument("--stdin-cases", nargs="*", help="Stdin test cases.")
+    triage_qemu_p.add_argument("--timeout", type=int, default=120, help="Per-step timeout in seconds.")
+    triage_qemu_p.set_defaults(func=_cmd_triage_qemu)
+
+    triage_wasm_p = sub.add_parser("triage-wasm", help="One-command WASM triage workflow.")
+    triage_wasm_p.add_argument("--target", required=True, help="Target WASM binary.")
+    triage_wasm_p.add_argument("--output-dir", required=True, help="Output directory for all reports.")
+    triage_wasm_p.set_defaults(func=_cmd_triage_wasm)
 
     quick_pe = sub.add_parser("quickstart-pe", help="One-command PE workflow: Ghidra metadata, drcov collection, coverage, and flow reports.")
     quick_pe.add_argument("--target", required=True, help="PE executable to analyze.")
