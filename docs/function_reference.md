@@ -13,7 +13,9 @@
 | `triage_qemu` | `target_path: str\|Path, output_dir: str\|Path, qemu_arch: str="arm", stdin_cases: list\|None=None, timeout: int=120` | `dict[str, Any]` | 一键 QEMU 远程分析：Ghidra metadata + QEMU trace + flow + branch_rank |
 | `triage_wasm` | `target_path: str\|Path, output_dir: str\|Path` | `dict[str, Any]` | 一键 WASM 分析：WASM metadata + decision_points + sig_match |
 | `triage_pyc` | `target_path: str\|Path, output_dir: str\|Path, disassemble: bool=False` | `dict[str, Any]` | 一键 Python .pyc 分析：magic 识别 + dis 反汇编 + code object 总结 + 可疑函数识别 |
+| `triage_apk` | `target_path: str\|Path, output_dir: str\|Path` | `dict[str, Any]` | 一键 Android APK 分析：AXML manifest 解析 + native libs 检测 + JADX summary 导入 + hook 推荐 |
 | `_detect_target_type` | `target: Path` | `dict[str, Any]` | 检测目标文件类型和架构（PE/ELF/WASM/PYC/APK），返回 type/arch/bits/endian 等信息 |
+| `_parse_axml_manifest` | `data: bytes` | `dict[str, Any]` | 解析 Android 二进制 XML (AXML) 格式的 AndroidManifest.xml，提取 package/permissions/main_activity |
 
 ### triage 输出统一格式
 
@@ -57,7 +59,7 @@
 
 | 函数名 | 输入 | 输出 | 作用 |
 |--------|------|------|------|
-| `suggest_hook` | `metadata_path: str\|Path\|None=None, decision_points_result: dict\|None=None, roles_result: dict\|None=None, trace_compare_result: dict\|None=None, target_type: str="native"` | `dict[str, Any]` | 根据分析证据推荐 Frida hook 模板 |
+| `suggest_hook` | `metadata_path: str\|Path\|None=None, decision_points_result: dict\|None=None, roles_result: dict\|None=None, trace_compare_result: dict\|None=None, target_type: str="native", apk_summary: dict\|None=None` | `dict[str, Any]` | 根据分析证据推荐 Frida hook 模板，支持 Android APK 场景 |
 | `suggest_angr` | `flow_diff_result: dict\|None=None, roles_result: dict\|None=None, decision_points_result: dict\|None=None, branch_rank_result: dict\|None=None` | `dict[str, Any]` | 根据分析证据推荐 angr 求解参数和脚本 |
 | `suggest_debug` | `decision_points_result: dict\|None=None, roles_result: dict\|None=None, trace_compare_result: dict\|None=None, debugger: str="gdb"` | `dict[str, Any]` | 根据分析证据推荐 GDB/x64dbg 断点脚本 |
 | `generate_template` | `template_name: str, output_path: str\|Path, params: dict\|None=None` | `dict[str, Any]` | 生成指定模板文件，替换 %KEY% 占位符 |
@@ -101,10 +103,21 @@
 | `list_runs` | `root: str\|None=None` | `dict[str, Any]` | 列出工作区中的所有运行记录 |
 | `list_reports` | `root: str\|None=None` | `dict[str, Any]` | 列出工作区中的所有报告 |
 | `list_notes` | `root: str\|None=None` | `dict[str, Any]` | 列出工作区中的所有笔记 |
+| `case_check` | `root: str\|None=None` | `dict[str, Any]` | 对工作区进行全面质量检查（10项检查：metadata/runs/reports/ai_digest/evidence_id/confidence/target/large_files/schema/next_actions） |
 
 ---
 
 ## 6. 分析引擎（beaconflow/analysis/）
+
+### 6.0 Schema 验证（beaconflow/schemas.py）
+
+| 函数名 | 输入 | 输出 | 作用 |
+|--------|------|------|------|
+| `validate_report` | `report: dict, schema_name: str` | `list[str]` | 验证报告是否符合指定 schema，返回错误列表 |
+| `validate_report_strict` | `report: dict, schema_name: str` | `dict[str, Any]` | 严格验证报告，返回包含 valid/error_count/errors 的结构化结果 |
+| `validate_all_reports` | `directory: str\|Path, recursive: bool=True` | `dict[str, Any]` | 批量验证目录下所有 JSON 报告文件，自动检测 schema 名称 |
+| `list_schemas` | 无 | `list[str]` | 列出所有可用 schema 名称 |
+| `get_schema` | `name: str` | `dict[str, Any]` | 获取指定 schema 的 JSON Schema 定义 |
 
 ### 6.1 覆盖率分析（coverage_mapper.py）
 
@@ -205,6 +218,8 @@ MCP 工具名与 Python 函数的对应关系：
 | `deflatten_merge` | `deflatten_merge()` | Advanced |
 | `branch_rank` | `rank_input_branches()` | Advanced |
 | `schema_validate` | `validate_report_strict()` | Advanced |
+| `schema_validate_all` | `validate_all_reports()` | Advanced |
+| `case_check` | `ws_case_check()` | Advanced |
 | `to_html` | `markdown_to_html()` / `json_to_html()` | Advanced |
 | `benchmark` | `run_builtin_benchmarks()` / `run_benchmark()` | Expert |
 
@@ -234,3 +249,5 @@ MCP 工具名与 Python 函数的对应关系：
 - **list_\*** : 列表函数，输出可用选项
 - **run_\*** : 运行函数，执行实际操作
 - **add_\*** : 添加函数，向 workspace 添加记录
+- **validate_\*** : 验证函数，检查报告或目录是否符合 schema
+- **case_check** : 工作区质量检查函数，综合检查工作区完整性和 AI 友好度
